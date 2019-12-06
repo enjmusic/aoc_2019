@@ -1,0 +1,9 @@
+[package]
+name = "aoc2"
+version = "0.1.0"
+authors = ["ianhoffman <ijh6@cornell.edu>"]
+edition = "2018"
+
+[dependencies]
+quicli = "0.4"
+structopt = "0.2"
