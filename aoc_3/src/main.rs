@@ -21,6 +21,11 @@ struct WireSegment {
     start_step: u64,
 }
 
+struct IntersectionRange {
+    x_bounds: (i64, i64),
+    y_bounds: (i64, i64),
+}
+
 impl WireSegment {
     // Make a new WireSegment similar to the input but with
     //  x1,x2 and y1,y2 always going in increasing order
@@ -35,6 +40,38 @@ impl WireSegment {
             out.y1 = input.y2;
         }
         out
+    }
+
+    // Precondition: point is a point on the WireSegment `self`
+    fn step_length_at_point(&self, point: (i64, i64)) -> u64 {
+        let abs_distance = (point.0 - self.x1).abs() + (point.1 - self.y1).abs();
+        self.start_step + (abs_distance as u64)
+    }
+
+    fn get_intersection_range(&self, other: &WireSegment) -> Option<IntersectionRange> {
+        // Convert x1,x2 and y1,y2 to always be increasing in that order
+        let seg_a_mod = WireSegment::to_increasing_order(*self);
+        let seg_b_mod = WireSegment::to_increasing_order(*other);
+
+        // No intersection if x ranges of segments A and B don't overlap
+        if seg_a_mod.x2 < seg_b_mod.x1 || seg_b_mod.x2 < seg_a_mod.x1 { return None; }
+
+        // No intersection if y ranges of segments A and B don't overlap
+        if seg_a_mod.y2 < seg_b_mod.y1 || seg_b_mod.y2 < seg_a_mod.y1 { return None; }
+
+        // Get the range on each axis of where the segments intersect
+        Some(IntersectionRange{
+            x_bounds: if seg_a_mod.x2 <= seg_b_mod.x2 {
+                (cmp::max(seg_a_mod.x1, seg_b_mod.x1), cmp::min(seg_a_mod.x2, seg_b_mod.x2))
+            } else {
+                (cmp::max(seg_b_mod.x1, seg_a_mod.x1), cmp::min(seg_b_mod.x2, seg_a_mod.x2))
+            },
+            y_bounds: if seg_a_mod.y2 <= seg_b_mod.y2 {
+                (cmp::max(seg_a_mod.y1, seg_b_mod.y1), cmp::min(seg_a_mod.y2, seg_b_mod.y2))
+            } else {
+                (cmp::max(seg_b_mod.y1, seg_a_mod.y1), cmp::min(seg_b_mod.y2, seg_a_mod.y2))
+            },
+        })
     }
 }
 
@@ -81,40 +118,32 @@ fn input_line_to_wire(line: io::Result<String>) -> Vec<WireSegment> {
     ret
 }
 
-fn get_intersection_manhattan_distance_from_origin(seg_a: WireSegment, seg_b: WireSegment) -> Option<u64> {
-    // Convert x1,x2 and y1,y2 to always be increasing in that order
-    let seg_a_mod = WireSegment::to_increasing_order(seg_a);
-    let seg_b_mod = WireSegment::to_increasing_order(seg_b);
+fn get_best_intersection_values(seg_a: WireSegment, seg_b: WireSegment) -> Option<(u64, u64)> {
+    let intersection_range = seg_a.get_intersection_range(&seg_b);
+    if intersection_range.is_none() { return None; }
+    let intersection_range = intersection_range.unwrap();
 
-    // No intersection if x ranges of segments A and B don't overlap
-    if seg_a_mod.x2 < seg_b_mod.x1 || seg_b_mod.x2 < seg_a_mod.x1 { return None; }
+    // Only the min/max bound points of the intersection range matter for calculating
+    // the best possible combined step length, nothing in between (proof left to the reader).
+    let intersection_bound1 = (
+        cmp::min(intersection_range.x_bounds.0, intersection_range.x_bounds.1),
+        cmp::min(intersection_range.y_bounds.0, intersection_range.y_bounds.1)
+    );
 
-    // No intersection if y ranges of segments A and B don't overlap
-    if seg_a_mod.y2 < seg_b_mod.y1 || seg_b_mod.y2 < seg_a_mod.y1 { return None; }
+    let intersection_bound2 = (
+        cmp::max(intersection_range.x_bounds.0, intersection_range.x_bounds.1),
+        cmp::max(intersection_range.y_bounds.0, intersection_range.y_bounds.1)
+    );
 
-    // Get the range on each axis of where the segments intersect
-    let x_intersect_range = if seg_a_mod.x2 <= seg_b_mod.x2 {
-        (cmp::max(seg_a_mod.x1, seg_b_mod.x1), cmp::min(seg_a_mod.x2, seg_b_mod.x2))
-    } else {
-        (cmp::max(seg_b_mod.x1, seg_a_mod.x1), cmp::min(seg_b_mod.x2, seg_a_mod.x2))
-    };
-
-    let y_intersect_range = if seg_a_mod.y2 <= seg_b_mod.y2 {
-        (cmp::max(seg_a_mod.y1, seg_b_mod.y1), cmp::min(seg_a_mod.y2, seg_b_mod.y2))
-    } else {
-        (cmp::max(seg_b_mod.y1, seg_a_mod.y1), cmp::min(seg_b_mod.y2, seg_a_mod.y2))
-    };
-
-    // TODO: Calculate the best possible combined step length for this intersection
-    // Also, make the return value Option<(u64, u64)> where the first item in the
-    // tuple is the existing Manhattan distance calculation and the second item is
-    // the best possible step length.
+    let bound1_step_length = seg_a.step_length_at_point(intersection_bound1) + seg_b.step_length_at_point(intersection_bound1);
+    let bound2_step_length = seg_a.step_length_at_point(intersection_bound2) + seg_b.step_length_at_point(intersection_bound2);
 
     // Get the x, y components of the intersection ranges closest to the origin
     // and add them, ending up with the intersection's minimum manhattan distance
-    let min_abs_x_distance = cmp::min(x_intersect_range.0.abs(), x_intersect_range.1.abs()) as u64;
-    let min_abs_y_distance = cmp::min(y_intersect_range.0.abs(), y_intersect_range.1.abs()) as u64;
-    Some(min_abs_x_distance + min_abs_y_distance)
+    let min_abs_x_distance = cmp::min(intersection_range.x_bounds.0.abs(), intersection_range.x_bounds.1.abs()) as u64;
+    let min_abs_y_distance = cmp::min(intersection_range.y_bounds.0.abs(), intersection_range.y_bounds.1.abs()) as u64;
+
+    Some((min_abs_x_distance + min_abs_y_distance, cmp::min(bound1_step_length, bound2_step_length)))
 }
 
 fn main() {
@@ -133,19 +162,22 @@ fn main() {
         println!("Invalid # of wires specified in input file: {}", wires.len());
         process::exit(1);
     }
-
-    // Compare segments between wires A and B for intersections
-    // and find the closest non-trivial one to the central port.
+    
     let mut closest_manhattan_distance: u64 = std::u64::MAX;
+    let mut shortest_step_length: u64 = std::u64::MAX;
     for segment_a in wires[0].clone() {
         for segment_b in wires[1].clone() {
-            if let Some(manhattan_distance) = get_intersection_manhattan_distance_from_origin(segment_a, segment_b) {
+            if let Some((manhattan_distance, min_step_length)) = get_best_intersection_values(segment_a, segment_b) {
                 if manhattan_distance < closest_manhattan_distance && manhattan_distance != 0 {
                     closest_manhattan_distance = manhattan_distance;
+                }
+                if min_step_length < shortest_step_length && min_step_length != 0 {
+                    shortest_step_length = min_step_length;
                 }
             }
         }
     }
 
-    println!("Closest non-trivial intersection to central port has Manhattan distance of {}", closest_manhattan_distance);
+    println!("Closest (by Manhattan distance) non-trivial intersection to central port has Manhattan distance of {}", closest_manhattan_distance);
+    println!("Closest (by step length) non-trivial intersection to central port has step length of {}", shortest_step_length);
 }
