@@ -37,27 +37,15 @@ enum IntcodeInstruction {
     Output { val: LoadParameter },
     Add { o1: LoadParameter, o2: LoadParameter, dest: usize },
     Mul { o1: LoadParameter, o2: LoadParameter, dest: usize },
+    LessThan { o1: LoadParameter, o2: LoadParameter, dest: usize },
+    Equals { o1: LoadParameter, o2: LoadParameter, dest: usize },
+    JumpIfTrue { predicate: LoadParameter, target: LoadParameter },
+    JumpIfFalse { predicate: LoadParameter, target: LoadParameter },
 }
 
 struct IntcodeProgram {
     memory: Vec<i64>,
     ip: usize,
-}
-
-fn input_to_memory(input: &String) -> Result<Vec<i64>> {
-    input.split(",").map(|item| {
-        if let Ok(integer) = item.parse::<i64>() {
-            Ok(integer)
-        } else {
-            Err(From::from("Invalid integer given"))
-        }
-    }).collect()
-}
-
-fn digits(i: u64) -> Result<Vec<u8>> {
-    i.to_string().chars().map(|x| {
-        x.to_digit(10).ok_or(From::from(format!("Invalid digit {}", x))).map(|i| i as u8)
-    }).collect()
 }
 
 fn get_int() -> Result<i64> {
@@ -68,10 +56,27 @@ fn get_int() -> Result<i64> {
     Ok(input.trim().parse::<i64>()?)
 }
 
+fn instruction_param_length(opcode: u64) -> Result<usize> {
+    match opcode {
+        1 => Ok(3),
+        2 => Ok(3),
+        3 => Ok(1),
+        4 => Ok(1),
+        5 => Ok(2),
+        6 => Ok(2),
+        7 => Ok(3),
+        8 => Ok(3),
+        99 => Ok(0),
+        _ => Err(From::from(format!("Invalid opcode: {}", opcode)))
+    }
+}
+
 impl IntcodeProgram {
     fn from_raw_input(input: &String) -> Result<IntcodeProgram> {
         Ok(IntcodeProgram{
-            memory: input_to_memory(input)?,
+            memory: input.split(",").map(|item| {
+                item.parse::<i64>().map_err(|_| From::from(format!("Invalid integer given: {}", item)))
+            }).collect::<Result<Vec<i64>>>()?,
             ip: 0,
         })
     }
@@ -101,76 +106,106 @@ impl IntcodeProgram {
     // Returns the next instruction and increments the instruction
     // pointer to the subsequent yet-unfetched one, or returns error
     fn get_instruction(&mut self) -> Result<IntcodeInstruction> {
-        let instruction = self.load_position(self.ip)? as u64;
+        let curr_ip = self.ip;
+        let instruction = self.load_position(curr_ip)? as u64;
         let opcode = instruction % 100;
+        let num_params = instruction_param_length(opcode)?;
 
-        // This is cool but a little hard to look at. We're making
-        // an infinite iterator that starts with the provided parameter
-        // modes and is extended by the default (position) infinitely.
-        let param_mode_digits = digits(instruction / 100)?;
-        let param_modes_iter = param_mode_digits.iter().rev().map(|&i| {
-            if i == 0 { ParameterMode::Position } else { ParameterMode::Immediate }
-        }).chain(std::iter::repeat(ParameterMode::Position));
+        // This is cool but a little weird. We're making an infinite iterator that starts with
+        // the provided parameter modes and is extended by the default (position) infinitely.
+        let param_modes: Vec<ParameterMode> = (instruction / 100).to_string().chars().rev().map(|x| {
+            if x == '0' { ParameterMode::Position } else { ParameterMode::Immediate }
+        }).chain(std::iter::repeat(ParameterMode::Position)).take(num_params).collect();
 
-        // Make parsed instruction and amount to advance instruction pointer
-        let parsed = match opcode {
+        self.ip += 1 + num_params;
+        match opcode {
             1 => {
-                let modes: Vec<ParameterMode> = param_modes_iter.take(3).collect();
-                (Ok(IntcodeInstruction::Add{
-                    o1: LoadParameter::new(self.memory[self.ip + 1], modes[0]),
-                    o2: LoadParameter::new(self.memory[self.ip + 2], modes[1]),
-                    dest: self.memory[self.ip + 3] as usize,
-                }), 4)
+                Ok(IntcodeInstruction::Add{
+                    o1: LoadParameter::new(self.memory[curr_ip + 1], param_modes[0]),
+                    o2: LoadParameter::new(self.memory[curr_ip + 2], param_modes[1]),
+                    dest: self.memory[curr_ip + 3] as usize,
+                })
             },
             2 => {
-                let modes: Vec<ParameterMode> = param_modes_iter.take(3).collect();
-                (Ok(IntcodeInstruction::Mul{
-                    o1: LoadParameter::new(self.memory[self.ip + 1], modes[0]),
-                    o2: LoadParameter::new(self.memory[self.ip + 2], modes[1]),
-                    dest: self.memory[self.ip + 3] as usize,
-                }), 4)
+                Ok(IntcodeInstruction::Mul{
+                    o1: LoadParameter::new(self.memory[curr_ip + 1], param_modes[0]),
+                    o2: LoadParameter::new(self.memory[curr_ip + 2], param_modes[1]),
+                    dest: self.memory[curr_ip + 3] as usize,
+                })
             },
             3 => {
-                (Ok(IntcodeInstruction::LoadInput{
-                    dest: self.memory[self.ip + 1] as usize
-                }), 2)
+                Ok(IntcodeInstruction::LoadInput{
+                    dest: self.memory[curr_ip + 1] as usize
+                })
             },
             4 => {
-                let modes: Vec<ParameterMode> = param_modes_iter.take(1).collect();
-                (Ok(IntcodeInstruction::Output{
-                    val: LoadParameter::new(self.memory[self.ip + 1], modes[0]),
-                }), 2)
+                Ok(IntcodeInstruction::Output{
+                    val: LoadParameter::new(self.memory[curr_ip + 1], param_modes[0]),
+                })
             },
-            99 => (Ok(IntcodeInstruction::Exit), 1),
-            _ => (Err(From::from("Invalid opcode")), 0)
-        };
-
-        self.ip += parsed.1;
-        parsed.0
+            5 => {
+                Ok(IntcodeInstruction::JumpIfTrue{
+                    predicate: LoadParameter::new(self.memory[curr_ip + 1], param_modes[0]),
+                    target: LoadParameter::new(self.memory[curr_ip + 2], param_modes[1])
+                })
+            },
+            6 => {
+                Ok(IntcodeInstruction::JumpIfFalse{
+                    predicate: LoadParameter::new(self.memory[curr_ip + 1], param_modes[0]),
+                    target: LoadParameter::new(self.memory[curr_ip + 2], param_modes[1])
+                })
+            },
+            7 => {
+                Ok(IntcodeInstruction::LessThan{
+                    o1: LoadParameter::new(self.memory[curr_ip + 1], param_modes[0]),
+                    o2: LoadParameter::new(self.memory[curr_ip + 2], param_modes[1]),
+                    dest: self.memory[curr_ip + 3] as usize,
+                })
+            },
+            8 => {
+                Ok(IntcodeInstruction::Equals{
+                    o1: LoadParameter::new(self.memory[curr_ip + 1], param_modes[0]),
+                    o2: LoadParameter::new(self.memory[curr_ip + 2], param_modes[1]),
+                    dest: self.memory[curr_ip + 3] as usize,
+                })
+            },
+            99 => Ok(IntcodeInstruction::Exit),
+            _ => Err(From::from("Invalid opcode"))
+        }
     }
 
     // Execute the next instruction at the instruction pointer, advancing
     // it and returning Ok(true) if the Intcode program should halt
     fn execute_next_instruction(&mut self) -> Result<bool> {
         match self.get_instruction()? {
-            IntcodeInstruction::Exit => Ok(true),
+            IntcodeInstruction::Exit => return Ok(true),
             IntcodeInstruction::LoadInput{dest} => {
                 self.store(dest, get_int()?)?;
-                Ok(false)
             },
             IntcodeInstruction::Output{val} => {
                 println!("Program output: {}", self.load(val)?);
-                Ok(false)
             },
             IntcodeInstruction::Add{o1, o2, dest} => {
                 self.store(dest, self.load(o1)? + self.load(o2)?)?;
-                Ok(false)
             },
             IntcodeInstruction::Mul{o1, o2, dest} => {
                 self.store(dest, self.load(o1)? * self.load(o2)?)?;
-                Ok(false)
             },
+            IntcodeInstruction::JumpIfTrue{predicate, target} => {
+                if self.load(predicate)? != 0 { self.ip = self.load(target)? as usize; }
+            },
+            IntcodeInstruction::JumpIfFalse{predicate, target} => {
+                if self.load(predicate)? == 0 { self.ip = self.load(target)? as usize; }
+            },
+            IntcodeInstruction::LessThan{o1, o2, dest} => {
+                self.store(dest, if self.load(o1)? < self.load(o2)? { 1 } else { 0 })?
+            },
+            IntcodeInstruction::Equals{o1, o2, dest} => {
+                self.store(dest, if self.load(o1)? == self.load(o2)? { 1 } else { 0 })?
+            }
         }
+
+        Ok(false)
     }
 
     fn execute(&mut self) -> Result<()> {
