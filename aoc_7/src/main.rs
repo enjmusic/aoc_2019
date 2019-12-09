@@ -4,6 +4,9 @@ use std::io::{self, prelude::*, BufReader};
 use std::path::PathBuf;
 use structopt::StructOpt;
 use std::collections::VecDeque;
+use std::sync::mpsc::{self, Sender, Receiver};
+use std::sync::{Arc, Mutex};
+use std::thread;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -15,6 +18,8 @@ struct Cli {
     lower_phase_setting: usize,
     #[structopt(short = "u")]
     upper_phase_setting: usize,
+    #[structopt(short = "g")]
+    use_feedback: bool,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -51,11 +56,97 @@ enum IntcodeInstruction {
     JumpIfFalse { predicate: LoadParameter, target: LoadParameter },
 }
 
+trait IODevice {
+    fn put(&mut self, output: i64);
+    fn get(&mut self) -> Result<i64>;
+}
+
+struct DefaultInputDevice {
+    buffer: VecDeque<i64>
+}
+
+impl DefaultInputDevice {
+    fn new() -> Box<DefaultInputDevice> {
+        Box::new(DefaultInputDevice{ buffer: VecDeque::new() })
+    }
+}
+
+struct DefaultOutputDevice {
+    last: Option<i64>
+}
+
+impl DefaultOutputDevice {
+    fn new() -> Box<DefaultOutputDevice> {
+        Box::new(DefaultOutputDevice{ last: None })
+    }
+}
+
+impl IODevice for DefaultInputDevice {
+    fn put(&mut self, output: i64) { self.buffer.push_front(output) }
+    fn get(&mut self) -> Result<i64> {
+        self.buffer.pop_back().map_or_else(|| {
+            print!("Enter program input: ");
+            io::stdout().flush()?;
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            Ok(input.trim().parse::<i64>()?)
+        }, |v| Ok(v))
+    }
+}
+
+impl IODevice for DefaultOutputDevice {
+    fn put(&mut self, output: i64) { self.last = Some(output) }
+    fn get(&mut self) -> Result<i64> {
+        self.last.map_or(Err(From::from("No output available")), |x| Ok(x))
+    }
+}
+
+struct ChannelInputDevice {
+    // Buffer is used if available, otherwise channel is
+    buffer: VecDeque<i64>,
+    channel: Receiver<i64>,
+}
+
+impl ChannelInputDevice {
+    fn new(channel: Receiver<i64>) -> Box<ChannelInputDevice> {
+        Box::new(ChannelInputDevice{ buffer: VecDeque::new(), channel: channel })
+    }
+}
+
+struct ChannelOutputDevice {
+    // If the output channel is closed we'll write to last instead
+    last: Option<i64>,
+    channel: Sender<i64>,
+}
+
+impl ChannelOutputDevice {
+    fn new(channel: Sender<i64>) -> Box<ChannelOutputDevice> {
+        Box::new(ChannelOutputDevice{ last: None, channel: channel })
+    }
+}
+
+impl IODevice for ChannelInputDevice {
+    fn put(&mut self, output: i64) { self.buffer.push_front(output) }
+    fn get(&mut self) -> Result<i64> {
+        self.buffer.pop_back().map_or_else(|| self.channel.recv()
+            .map_err(|_| From::from("Failed to recv")), |x| Ok(x))
+    }
+}
+
+impl IODevice for ChannelOutputDevice {
+    fn put(&mut self, output: i64) {
+        self.channel.send(output).unwrap_or_else(|_| self.last = Some(output))
+    }
+    fn get(&mut self) -> Result<i64> {
+        self.last.map_or(Err(From::from("No output available")), |x| Ok(x))
+    }
+}
+
 struct IntcodeProgram {
     memory: Vec<i64>,
     ip: usize,
-    input: VecDeque<i64>,
-    output: Vec<i64>,
+    input: Box<dyn IODevice + Send>,
+    output: Box<dyn IODevice + Send>,
 }
 
 fn instruction_param_length(opcode: u64) -> Result<usize> {
@@ -80,23 +171,9 @@ impl IntcodeProgram {
                 item.parse::<i64>().map_err(|_| From::from(format!("Invalid integer given: {}", item)))
             }).collect::<Result<Vec<i64>>>()?,
             ip: 0,
-            input: VecDeque::new(),
-            output: vec![],
+            input: DefaultInputDevice::new(),
+            output: DefaultOutputDevice::new(),
         })
-    }
-
-    fn get_input(&mut self) -> Result<i64> {
-        self.input.pop_front().map_or_else(|| {
-            print!("Enter program input: ");
-            io::stdout().flush()?;
-            let mut input = String::new();
-            io::stdin().read_line(&mut input)?;
-            Ok(input.trim().parse::<i64>()?)
-        }, |v| Ok(v))
-    }
-
-    fn give_input(&mut self, input: i64) {
-        self.input.push_back(input)
     }
 
     fn load_position(&self, location: usize) -> Result<i64> {
@@ -198,12 +275,12 @@ impl IntcodeProgram {
         match self.get_instruction()? {
             IntcodeInstruction::Exit => return Ok(true),
             IntcodeInstruction::LoadInput{dest} => {
-                let input = self.get_input()?;
+                let input = self.input.get()?;
                 self.store(dest, input)?;
             },
             IntcodeInstruction::Output{val} => {
                 let output = self.load(val)?;
-                self.output.push(output);
+                self.output.put(output);
             },
             IntcodeInstruction::Add{o1, o2, dest} => {
                 self.store(dest, self.load(o1)? + self.load(o2)?)?;
@@ -234,24 +311,56 @@ impl IntcodeProgram {
     }
 }
 
-fn run_amplifier_chain(program: &String, phase_settings: Vec<i64>) -> Result<i64> {
+fn run_amplifier_chain(program: &String, phase_settings: Vec<i64>, use_feedback: bool) -> Result<i64> {
     let mut amplifiers: Vec<IntcodeProgram> = phase_settings.iter()
-        .map(|setting| {
-            IntcodeProgram::from_raw_input(program).and_then(|mut p| {
-                p.give_input(*setting);
-                Ok(p)
-            })
-        }).collect::<Result<Vec<IntcodeProgram>>>()?;
-    
-    let mut curr_input = 0;
-    for amplifier in &mut amplifiers {
-        amplifier.give_input(curr_input);
-        amplifier.execute()?;
-        curr_input = *amplifier.output.get(0)
-            .ok_or::<Box<dyn std::error::Error>>(From::from("No output"))?;
+        .map(|_| IntcodeProgram::from_raw_input(program)).collect::<Result<Vec<IntcodeProgram>>>()?;
+
+    let num_amplifiers = amplifiers.len();
+        
+    // Connect non-boundary programs with channels
+    for i in 0..(num_amplifiers - 1) {
+        let (tx, rx): (Sender<i64>, Receiver<i64>) = mpsc::channel();
+        amplifiers[i].output = ChannelOutputDevice::new(tx);
+        amplifiers[i + 1].input = ChannelInputDevice::new(rx);
     }
 
-    Ok(curr_input)
+    if use_feedback {
+        let (tx, rx): (Sender<i64>, Receiver<i64>) = mpsc::channel();
+        amplifiers[num_amplifiers - 1].output = ChannelOutputDevice::new(tx);
+        amplifiers[0].input = ChannelInputDevice::new(rx);
+    }
+
+    // Give each amplifier its phase setting
+    for (idx, amplifier) in amplifiers.iter_mut().enumerate() {
+        amplifier.input.put(phase_settings[idx]);
+    }
+
+    // Give the initial input to the first amplifier
+    amplifiers[0].input.put(0);
+
+    // Spawn amplifier threads to concurrently compute signal
+    let mut threads = vec![];
+    let mut idx = 0;
+    let result: Arc<Mutex<Option<i64>>> = Arc::new(Mutex::new(None));
+    for mut amplifier in amplifiers {
+        let res = result.clone();
+        threads.push(thread::Builder::new().name(format!("amplifier{}", idx)).spawn(move || {
+            amplifier.execute().unwrap();
+            if idx == num_amplifiers - 1 {
+                *res.lock().unwrap() = Some(amplifier.output.get().unwrap());
+            }
+        })?);
+        idx += 1;
+    }
+
+    for thread in threads {
+        if let Err(_) = thread.join() {
+            return Err(From::from("Amplifier thread panicked"));
+        }
+    }
+
+    let calculation_result = *result.lock().unwrap();
+    calculation_result.ok_or(From::from("No result was calculated"))
 }
 
 fn main() -> Result<()> {
@@ -273,7 +382,7 @@ fn main() -> Result<()> {
         std::iter::repeat_with(|| { let tmp = idx % options.len(); idx /= options.len(); options.remove(tmp) as i64 })
             .take(5).collect()
     }) {
-        max_power_found = cmp::max(max_power_found, run_amplifier_chain(&contents, input)?);
+        max_power_found = cmp::max(max_power_found, run_amplifier_chain(&contents, input, opt.use_feedback)?);
     }
 
     println!("Max possible power: {}", max_power_found);
