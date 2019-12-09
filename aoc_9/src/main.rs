@@ -21,30 +21,31 @@ enum ParameterMode {
 }
 
 #[derive(Clone, Debug)]
-struct LoadParameter {
+struct Parameter {
     param: i64,
     mode: ParameterMode,
 }
 
-impl LoadParameter {
-    fn new(param: i64, mode: ParameterMode) -> LoadParameter {
-        LoadParameter {
+impl Parameter {
+    fn new(param: i64, mode: ParameterMode) -> Parameter {
+        Parameter {
             param: param,
             mode: mode,
         }
     }
 }
 
+#[derive(Debug)]
 enum IntcodeInstruction {
-    Add { o1: LoadParameter, o2: LoadParameter, dest: usize },
-    Mul { o1: LoadParameter, o2: LoadParameter, dest: usize },
-    LoadInput { dest: usize },
-    Output { val: LoadParameter },
-    LessThan { o1: LoadParameter, o2: LoadParameter, dest: usize },
-    Equals { o1: LoadParameter, o2: LoadParameter, dest: usize },
-    JumpIfTrue { predicate: LoadParameter, target: LoadParameter },
-    JumpIfFalse { predicate: LoadParameter, target: LoadParameter },
-    AdjustRelativeBase { val: LoadParameter },
+    Add { o1: Parameter, o2: Parameter, dest: Parameter },
+    Mul { o1: Parameter, o2: Parameter, dest: Parameter },
+    LoadInput { dest: Parameter },
+    Output { val: Parameter },
+    LessThan { o1: Parameter, o2: Parameter, dest: Parameter },
+    Equals { o1: Parameter, o2: Parameter, dest: Parameter },
+    JumpIfTrue { predicate: Parameter, target: Parameter },
+    JumpIfFalse { predicate: Parameter, target: Parameter },
+    AdjustRelativeBase { val: Parameter },
     Exit,
 }
 
@@ -97,7 +98,7 @@ struct IntcodeProgram {
     memory: Vec<i64>,
     extended_memory: HashMap<usize, i64>,
     ip: usize,
-    relative_base: usize,
+    relative_base: i64,
     input: Box<dyn IODevice + Send>,
     output: Box<dyn IODevice + Send>,
 }
@@ -140,15 +141,20 @@ impl IntcodeProgram {
         }
     }
 
-    fn load(&self, lp: LoadParameter) -> i64 {
-        match lp.mode {
-            ParameterMode::Position => self.load_position(lp.param as usize),
-            ParameterMode::Immediate => lp.param,
-            ParameterMode::Relative => self.load_position((lp.param + self.relative_base as i64) as usize)
+    fn load(&self, p: Parameter) -> i64 {
+        match p.mode {
+            ParameterMode::Position => self.load_position(p.param as usize),
+            ParameterMode::Immediate => p.param,
+            ParameterMode::Relative => self.load_position((p.param + self.relative_base) as usize)
         }
     }
 
-    fn store(&mut self, location: usize, value: i64) {
+    fn store(&mut self, p: Parameter, value: i64) {
+        let location = match p.mode {
+            ParameterMode::Relative => (p.param + self.relative_base) as usize,
+            _ => p.param as usize,
+        };
+
         if location >= self.memory.len() {
             self.extended_memory.insert(location, value);
         } else {
@@ -178,57 +184,57 @@ impl IntcodeProgram {
         match opcode {
             1 => {
                 Ok(IntcodeInstruction::Add{
-                    o1: LoadParameter::new(self.load_position(curr_ip + 1), param_modes[0]),
-                    o2: LoadParameter::new(self.load_position(curr_ip + 2), param_modes[1]),
-                    dest: self.load_position(curr_ip + 3) as usize,
+                    o1: Parameter::new(self.load_position(curr_ip + 1), param_modes[0]),
+                    o2: Parameter::new(self.load_position(curr_ip + 2), param_modes[1]),
+                    dest: Parameter::new(self.load_position(curr_ip + 3), param_modes[2]),
                 })
             },
             2 => {
                 Ok(IntcodeInstruction::Mul{
-                    o1: LoadParameter::new(self.load_position(curr_ip + 1), param_modes[0]),
-                    o2: LoadParameter::new(self.load_position(curr_ip + 2), param_modes[1]),
-                    dest: self.load_position(curr_ip + 3) as usize,
+                    o1: Parameter::new(self.load_position(curr_ip + 1), param_modes[0]),
+                    o2: Parameter::new(self.load_position(curr_ip + 2), param_modes[1]),
+                    dest: Parameter::new(self.load_position(curr_ip + 3), param_modes[2]),
                 })
             },
             3 => {
                 Ok(IntcodeInstruction::LoadInput{
-                    dest: self.load_position(curr_ip + 1) as usize
+                    dest: Parameter::new(self.load_position(curr_ip + 1), param_modes[0]),
                 })
             },
             4 => {
                 Ok(IntcodeInstruction::Output{
-                    val: LoadParameter::new(self.load_position(curr_ip + 1), param_modes[0]),
+                    val: Parameter::new(self.load_position(curr_ip + 1), param_modes[0]),
                 })
             },
             5 => {
                 Ok(IntcodeInstruction::JumpIfTrue{
-                    predicate: LoadParameter::new(self.load_position(curr_ip + 1), param_modes[0]),
-                    target: LoadParameter::new(self.load_position(curr_ip + 2), param_modes[1])
+                    predicate: Parameter::new(self.load_position(curr_ip + 1), param_modes[0]),
+                    target: Parameter::new(self.load_position(curr_ip + 2), param_modes[1])
                 })
             },
             6 => {
                 Ok(IntcodeInstruction::JumpIfFalse{
-                    predicate: LoadParameter::new(self.load_position(curr_ip + 1), param_modes[0]),
-                    target: LoadParameter::new(self.load_position(curr_ip + 2), param_modes[1])
+                    predicate: Parameter::new(self.load_position(curr_ip + 1), param_modes[0]),
+                    target: Parameter::new(self.load_position(curr_ip + 2), param_modes[1])
                 })
             },
             7 => {
                 Ok(IntcodeInstruction::LessThan{
-                    o1: LoadParameter::new(self.load_position(curr_ip + 1), param_modes[0]),
-                    o2: LoadParameter::new(self.load_position(curr_ip + 2), param_modes[1]),
-                    dest: self.load_position(curr_ip + 3) as usize,
+                    o1: Parameter::new(self.load_position(curr_ip + 1), param_modes[0]),
+                    o2: Parameter::new(self.load_position(curr_ip + 2), param_modes[1]),
+                    dest: Parameter::new(self.load_position(curr_ip + 3), param_modes[2]),
                 })
             },
             8 => {
                 Ok(IntcodeInstruction::Equals{
-                    o1: LoadParameter::new(self.load_position(curr_ip + 1), param_modes[0]),
-                    o2: LoadParameter::new(self.load_position(curr_ip + 2), param_modes[1]),
-                    dest: self.load_position(curr_ip + 3) as usize,
+                    o1: Parameter::new(self.load_position(curr_ip + 1), param_modes[0]),
+                    o2: Parameter::new(self.load_position(curr_ip + 2), param_modes[1]),
+                    dest: Parameter::new(self.load_position(curr_ip + 3), param_modes[2]),
                 })
             },
             9 => {
                 Ok(IntcodeInstruction::AdjustRelativeBase{
-                    val: LoadParameter::new(self.load_position(curr_ip + 1), param_modes[0]),
+                    val: Parameter::new(self.load_position(curr_ip + 1), param_modes[0]),
                 })
             }
             99 => Ok(IntcodeInstruction::Exit),
@@ -267,7 +273,7 @@ impl IntcodeProgram {
                 self.store(dest, if self.load(o1) == self.load(o2) { 1 } else { 0 })
             },
             IntcodeInstruction::AdjustRelativeBase{val} => {
-                self.relative_base = self.load(val) as usize;
+                self.relative_base += self.load(val);
             },
             IntcodeInstruction::Exit => return Ok(true),
         }
