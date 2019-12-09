@@ -1,15 +1,16 @@
 use std::fs::File;
 use std::io::{prelude::*, BufReader};
-use std::process;
 use std::path::PathBuf;
 use structopt::StructOpt;
 
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+
 #[derive(Debug, StructOpt)]
 struct Cli {
-    #[structopt(short = "r")]
-    recurse: bool,
     #[structopt(short = "f", parse(from_os_str))]
     file: PathBuf,
+    #[structopt(short = "r")]
+    recurse: bool,
 }
 
 fn calc_fuel_requirement(mut mass: i64, should_recurse: bool) -> i64 {
@@ -29,27 +30,22 @@ fn calc_fuel_requirement(mut mass: i64, should_recurse: bool) -> i64 {
     accum
 }
 
-fn main() {
+fn main() -> Result<()> {
     let opt = Cli::from_args();
+    let file = File::open(opt.file)?;
+    let reader = BufReader::new(file);
 
-    let file = File::open(opt.file.clone());
-    let total_fuel_requirement: i64 = match file {
-        Ok(f) => {
-            let reader = BufReader::new(f);
-            let mut accum_requirement: i64 = 0;
-
-            for line in reader.lines() {
-                let module_mass = line.unwrap().parse::<i64>().unwrap();
-                accum_requirement += calc_fuel_requirement(module_mass, opt.recurse);
-            }
-
-            accum_requirement
-        },
-        Err(e) => {
-            println!("Error opening file: {}", e);
-            process::exit(1);
+    let module_masses = reader.lines().map(|line| {
+        if let Ok(l) = line {
+            l.parse::<i64>().map_err(|_| From::from("Failed to parse line"))
+        } else {
+            Err(From::from("Failed to read line"))
         }
-    };
+    }).collect::<Result<Vec<i64>>>()?;
 
-    println!("The total fuel requirement is: {}", total_fuel_requirement);
+    let recurse = opt.recurse;
+    let total_fuel_requirement = module_masses.iter()
+        .fold(0, |acc, mass| acc + calc_fuel_requirement(*mass, recurse));
+
+    Ok(println!("The total fuel requirement is: {}", total_fuel_requirement))
 }
