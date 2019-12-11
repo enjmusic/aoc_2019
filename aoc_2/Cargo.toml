@@ -1,8 +1,9 @@
 [package]
-name = "aoc2"
+name = "aoc_2"
 version = "0.1.0"
 authors = ["ianhoffman <ijh6@cornell.edu>"]
 edition = "2018"
 
 [dependencies]
 structopt = "0.2"
+intcode = { path = "../intcode" }
