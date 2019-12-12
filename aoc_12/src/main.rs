@@ -2,7 +2,6 @@
 use std::fs::File;
 use std::io::{prelude::*, BufReader};
 use std::path::PathBuf;
-use std::collections::HashMap;
 use structopt::StructOpt;
 use regex::Regex;
 
@@ -74,14 +73,14 @@ fn simulate_moons(moons: &mut Vec<Moon>) {
     }
 }
 
-fn moons_to_dimensional_hash_keys(moons: &Vec<Moon>) -> [String; 3] {
-    let mut keys = ["".to_owned(), "".to_owned(), "".to_owned()];
-    for moon in moons {
+fn get_matching_state_for_axes(curr_state: &Vec<Moon>, original_state: &Vec<Moon>) -> [bool; 3] {
+    let mut ret = [true, true, true];
+    curr_state.iter().zip(original_state.iter()).for_each(|(curr, orig)| {
         for i in 0..3 {
-            keys[i].push_str(&format!("[{},{}]", moon.position[i], moon.velocity[i]));
+            ret[i] = ret[i] && (curr.position[i] == orig.position[i] && curr.velocity[i] == orig.velocity[i]);
         }
-    }
-    keys
+    });
+    ret
 }
 
 fn lcm(a: usize, b: usize) -> usize {
@@ -102,23 +101,19 @@ fn part1(moons: &mut Vec<Moon>, num_steps: usize) {
 }
 
 fn part2(moons: &mut Vec<Moon>) {
-    let mut seen_states: [HashMap<String, usize>; 3] = [HashMap::new(), HashMap::new(), HashMap::new()];
+    let original_moons = moons.clone();
     let mut cycle_lengths: [Option<usize>; 3] = [None, None, None];
     let mut num_steps = 0;
 
     while !cycle_lengths.iter().all(|l| l.is_some() ) {
-        let hash_keys = moons_to_dimensional_hash_keys(moons);
-        for i in 0..3 {
-            if cycle_lengths[i].is_none() {
-                if let Some(v) = seen_states[i].get(&hash_keys[i]) {
-                    cycle_lengths[i] = Some(num_steps - *v);
-                }
-                seen_states[i].insert(hash_keys[i].clone(), num_steps);
-            }
-        }
-
         simulate_moons(moons);
         num_steps += 1;
+
+        for (dim, is_match) in get_matching_state_for_axes(moons, &original_moons).iter().enumerate() {
+            if cycle_lengths[dim].is_none() && *is_match {
+                cycle_lengths[dim] = Some(num_steps);
+            }
+        }
     }
 
     let lcm_across_dimensions = cycle_lengths.iter().fold(1, |acc, l| lcm(acc, l.unwrap()));
