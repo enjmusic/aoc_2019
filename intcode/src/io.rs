@@ -29,6 +29,12 @@ pub struct ChannelOutputDevice {
     channel: Sender<i64>,
 }
 
+pub struct NotifyingChannelInputDevice {
+    // The receiver of notify can try_recv() to see if it's time to give input
+    notify: Sender<bool>,
+    channel: Receiver<i64>,
+}
+
 impl DefaultInputDevice {
     pub fn new() -> Box<DefaultInputDevice> {
         Box::new(DefaultInputDevice{ buffer: VecDeque::new() })
@@ -50,6 +56,12 @@ impl ChannelInputDevice {
 impl ChannelOutputDevice {
     pub fn new(channel: Sender<i64>) -> Box<ChannelOutputDevice> {
         Box::new(ChannelOutputDevice{ buffer: VecDeque::new(), channel: channel })
+    }
+}
+
+impl NotifyingChannelInputDevice {
+    pub fn new(channel: Receiver<i64>, notify: Sender<bool>) -> Box<NotifyingChannelInputDevice> {
+        Box::new(NotifyingChannelInputDevice{ notify: notify, channel: channel })
     }
 }
 
@@ -89,5 +101,13 @@ impl IODevice for ChannelOutputDevice {
     }
     fn get(&mut self) -> Result<i64> {
         self.buffer.pop_back().map_or(Err(From::from("No output available")), |x| Ok(x))
+    }
+}
+
+impl IODevice for NotifyingChannelInputDevice {
+    fn put(&mut self, _: i64) { /* NOP */ }
+    fn get(&mut self) -> Result<i64> {
+        self.notify.send(true)?;
+        self.channel.recv().map_err(|_| From::from("Failed to recv"))
     }
 }
