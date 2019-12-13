@@ -66,9 +66,9 @@ impl Screen {
             (cmp::max(acc.0, (*c).0), cmp::max(acc.1, (*c).1))
         });
 
-        for y in 0..upper_bounds.1 {
-            let line = (0..upper_bounds.0).map(|x| self.tiles.get(&(x, y))
-                .map_or('\u{2002}', |tid| tid.to_char())).collect::<String>();
+        for y in 0..=upper_bounds.1 {
+            let line = (0..=upper_bounds.0).map(|x| 
+                self.tiles.get(&(x, y)).unwrap_or(&TileID::Empty).to_char()).collect::<String>();
             println!("{}", line);
         }
     }
@@ -177,6 +177,7 @@ fn part2(input: &String, display: bool) -> Result<()> {
 
                 if display {
                     println!("{}[2J", 27 as char);
+                    println!("Score: {}", score);
                     screen.display();
                     thread::sleep(time::Duration::from_millis(125));
                 }
