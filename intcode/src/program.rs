@@ -3,6 +3,13 @@ use std::collections::HashMap;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+#[derive(PartialEq)]
+pub enum Event {
+    InputRequired,
+    ProducedOutput,
+    Exited,
+}
+
 #[derive(Copy, Clone, Debug)]
 enum ParameterMode {
     Position,
@@ -44,8 +51,8 @@ pub struct IntcodeProgram {
     extended_memory: HashMap<usize, i64>,
     ip: usize,
     relative_base: i64,
-    input: Box<dyn io::IODevice + Send>,
-    output: Box<dyn io::IODevice + Send>,
+    input: Box<dyn io::InputDevice + Send>,
+    output: Box<dyn io::OutputDevice + Send>,
 }
 
 fn instruction_param_length(opcode: u64) -> Result<usize> {
@@ -201,8 +208,8 @@ impl IntcodeProgram {
 
     // Execute the next instruction at the instruction pointer, advancing
     // it and returning Ok(true) if the Intcode program should halt
-    fn execute_next_instruction(&mut self) -> Result<bool> {
-        match self.get_instruction()? {
+    fn execute_instruction(&mut self, instruction: IntcodeInstruction, input_break: bool) -> Result<Option<Event>> {
+        match instruction {
             IntcodeInstruction::Add{o1, o2, dest} => {
                 self.store(dest, self.load(o1) + self.load(o2));
             },
@@ -210,12 +217,21 @@ impl IntcodeProgram {
                 self.store(dest, self.load(o1) * self.load(o2));
             },
             IntcodeInstruction::LoadInput{dest} => {
-                let input = self.input.get()?;
-                self.store(dest, input);
+                if input_break {
+                    if let Some(input) = self.input.get_maybe() {
+                        self.store(dest, input);
+                    } else {
+                        return Ok(Some(Event::InputRequired))
+                    }
+                } else {
+                    let input = self.input.get()?;
+                    self.store(dest, input);
+                }
             },
             IntcodeInstruction::Output{val} => {
                 let output = self.load(val);
                 self.output.put(output);
+                return Ok(Some(Event::ProducedOutput))
             },
             IntcodeInstruction::JumpIfTrue{predicate, target} => {
                 if self.load(predicate) != 0 { self.ip = self.load(target) as usize; }
@@ -232,30 +248,42 @@ impl IntcodeProgram {
             IntcodeInstruction::AdjustRelativeBase{val} => {
                 self.relative_base += self.load(val);
             },
-            IntcodeInstruction::Exit => return Ok(true),
+            IntcodeInstruction::Exit => return Ok(Some(Event::Exited)),
         }
 
-        Ok(false)
+        Ok(None)
     }
 
     pub fn execute(&mut self) -> Result<()> {
-        while !(self.execute_next_instruction()?) {}
-        Ok(())
+        loop {
+            let instruction = self.get_instruction()?;
+            if let Some(Event::Exited) = self.execute_instruction(instruction, false)? { return Ok(()) }
+        }
     }
 
-    pub fn replace_input(&mut self, new: Box<dyn io::IODevice + Send>) {
+    pub fn execute_until_event(&mut self) -> Result<Event> {
+        loop {
+            let curr_ip = self.ip; // In case of input rewind
+            let instruction = self.get_instruction()?;
+            if let Some(event) = self.execute_instruction(instruction, true)? {
+                if event == Event::InputRequired { self.ip = curr_ip; }
+                return Ok(event)
+            }
+        }
+    }
+
+    pub fn replace_input(&mut self, new: Box<dyn io::InputDevice + Send>) {
         self.input = new;
     }
 
-    pub fn replace_output(&mut self, new: Box<dyn io::IODevice + Send>) {
+    pub fn replace_output(&mut self, new: Box<dyn io::OutputDevice + Send>) {
         self.output = new;
     }
 
     pub fn give_input(&mut self, input: i64) { self.input.put(input) }
-    pub fn get_output(&mut self) -> Result<i64> { self.output.get() }
-
+    pub fn get_output(&mut self) -> Option<i64> { self.output.get() }
     pub fn get_all_output(&mut self) -> Vec<i64> {
         std::iter::repeat_with(|| self.output.get())
-            .take_while(|i| i.is_ok()).map(|i| i.unwrap()).collect()
+            .take_while(|o| o.is_some()).map(|o| o.unwrap()).collect()
     }
 }

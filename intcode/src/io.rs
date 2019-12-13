@@ -4,9 +4,15 @@ use std::sync::mpsc::{Sender, Receiver};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-pub trait IODevice {
+pub trait InputDevice {
     fn put(&mut self, output: i64);
     fn get(&mut self) -> Result<i64>;
+    fn get_maybe(&mut self) -> Option<i64>;
+}
+
+pub trait OutputDevice {
+    fn put(&mut self, output: i64);
+    fn get(&mut self) -> Option<i64>;
 }
 
 pub struct DefaultInputDevice {
@@ -27,12 +33,6 @@ pub struct ChannelOutputDevice {
     // If the output channel is closed we'll write to buffer instead
     buffer: VecDeque<i64>,
     channel: Sender<i64>,
-}
-
-pub struct NotifyingChannelInputDevice {
-    // The receiver of notify can try_recv() to see if it's time to give input
-    notify: Sender<bool>,
-    channel: Receiver<i64>,
 }
 
 impl DefaultInputDevice {
@@ -59,15 +59,9 @@ impl ChannelOutputDevice {
     }
 }
 
-impl NotifyingChannelInputDevice {
-    pub fn new(channel: Receiver<i64>, notify: Sender<bool>) -> Box<NotifyingChannelInputDevice> {
-        Box::new(NotifyingChannelInputDevice{ notify: notify, channel: channel })
-    }
-}
-
 // Private
 
-impl IODevice for DefaultInputDevice {
+impl InputDevice for DefaultInputDevice {
     fn put(&mut self, output: i64) { self.buffer.push_front(output) }
     fn get(&mut self) -> Result<i64> {
         self.buffer.pop_back().map_or_else(|| {
@@ -78,36 +72,36 @@ impl IODevice for DefaultInputDevice {
             Ok(input.trim().parse::<i64>()?)
         }, |v| Ok(v))
     }
-}
-
-impl IODevice for DefaultOutputDevice {
-    fn put(&mut self, output: i64) { self.buffer.push_front(output) }
-    fn get(&mut self) -> Result<i64> {
-        self.buffer.pop_back().map_or(Err(From::from("No output available")), |x| Ok(x))
+    fn get_maybe(&mut self) -> Option<i64> {
+        self.buffer.pop_back()
     }
 }
 
-impl IODevice for ChannelInputDevice {
+impl OutputDevice for DefaultOutputDevice {
+    fn put(&mut self, output: i64) { self.buffer.push_front(output) }
+    fn get(&mut self) -> Option<i64> { self.buffer.pop_back() }
+}
+
+impl InputDevice for ChannelInputDevice {
     fn put(&mut self, output: i64) { self.buffer.push_front(output) }
     fn get(&mut self) -> Result<i64> {
         self.buffer.pop_back().map_or_else(|| self.channel.recv()
             .map_err(|_| From::from("Failed to recv")), |x| Ok(x))
     }
+    fn get_maybe(&mut self) -> Option<i64> {
+        if self.buffer.len() > 0 {
+            self.buffer.pop_back()
+        } else if let Ok(v) = self.channel.try_recv() {
+            Some(v)
+        } else {
+            None
+        }
+    }
 }
 
-impl IODevice for ChannelOutputDevice {
+impl OutputDevice for ChannelOutputDevice {
     fn put(&mut self, output: i64) {
         self.channel.send(output).unwrap_or_else(|_| self.buffer.push_front(output))
     }
-    fn get(&mut self) -> Result<i64> {
-        self.buffer.pop_back().map_or(Err(From::from("No output available")), |x| Ok(x))
-    }
-}
-
-impl IODevice for NotifyingChannelInputDevice {
-    fn put(&mut self, _: i64) { /* NOP */ }
-    fn get(&mut self) -> Result<i64> {
-        self.notify.send(true)?;
-        self.channel.recv().map_err(|_| From::from("Failed to recv"))
-    }
+    fn get(&mut self) -> Option<i64> { self.buffer.pop_back() }
 }
