@@ -71,29 +71,22 @@ impl Screen {
         }
     }
 
-    fn get_paddle_and_ball_locations(&self) -> Result<((i64, i64), (i64, i64))> {
-        let mut paddle_location: Option<(i64, i64)> = None;
-        let mut ball_location: Option<(i64, i64)> = None;
+    fn get_paddle_and_ball_locations(&self) -> (i64, (i64, i64)) {
+        let (mut paddle_x, mut ball_location) = (0, (0, 0));
 
         self.tiles.iter().for_each(|(c, tid)| { match tid {
-            TileID::Paddle => paddle_location = Some(*c),
-            TileID::Ball => ball_location = Some(*c),
+            TileID::Paddle => paddle_x = (*c).0,
+            TileID::Ball => ball_location = *c,
             _ => (),
         }});
 
-        if let (Some(p), Some(b)) = (paddle_location, ball_location) {
-            Ok((p, b))
-        } else {
-            Err(From::from("Could not find both paddle and ball"))
-        }
+        (paddle_x, ball_location)
     }
 }
 
 struct Predictor {
     ball_position: (i64, i64),
     ball_velocity: (i64, i64),
-    paddle_position: (i64, i64),
-    target_x: i64,
 }
 
 impl Predictor {
@@ -101,22 +94,14 @@ impl Predictor {
         Predictor{
             ball_position: (0, 0),
             ball_velocity: (0, 0),
-            paddle_position: (0, 0),
-            target_x: 0,
         }
     }
 
-    fn update(&mut self, screen: &Screen) -> Result<()> {
-        let (p, b) = screen.get_paddle_and_ball_locations()?;
+    fn update(&mut self, screen: &Screen) -> i64 {
+        let (p, b) = screen.get_paddle_and_ball_locations();
         self.ball_position = b;
-        self.paddle_position = p;
         self.ball_velocity = (b.0 - self.ball_position.0, b.1 - self.ball_position.1);
-        self.target_x = self.ball_position.0 + self.ball_velocity.0;
-        Ok(())
-    }
-
-    fn get_input(&self) -> i64 {
-        self.target_x.cmp(&self.paddle_position.0) as i64
+        (self.ball_position.0 + self.ball_velocity.0).cmp(&p) as i64
     }
 }
 
@@ -147,16 +132,13 @@ fn part2(input: &String, display: bool) -> Result<()> {
     loop {
         match program.execute_until_event()? {
             Event::InputRequired => {
-                predictor.update(&screen).unwrap_or(());
-
                 if display {
                     println!("{}[2J", 27 as char);
                     println!("Score: {}", score);
                     screen.display();
                     thread::sleep(time::Duration::from_millis(125));
                 }
-
-                program.give_input(predictor.get_input());
+                program.give_input(predictor.update(&screen));
             },
             Event::ProducedOutput => {
                 outputs.push(program.get_output().unwrap());
