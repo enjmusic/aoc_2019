@@ -32,6 +32,16 @@ impl Parameter {
     }
 }
 
+impl std::fmt::Display for Parameter {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self.mode {
+            ParameterMode::Position => write!(f, "[{}]", self.param),
+            ParameterMode::Immediate => write!(f, "{}", self.param),
+            ParameterMode::Relative => write!(f, "[rb + {}]", self.param),
+        }
+    }
+}
+
 #[derive(Debug)]
 enum IntcodeInstruction {
     Add { o1: Parameter, o2: Parameter, dest: Parameter },
@@ -46,6 +56,55 @@ enum IntcodeInstruction {
     Exit,
 }
 
+impl std::fmt::Display for IntcodeInstruction {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            IntcodeInstruction::Add{o1, o2, dest} => {
+                write!(f, "add: {} <- {} + {}", dest, o1, o2)
+            },
+            IntcodeInstruction::Mul{o1, o2, dest} => {
+                write!(f, "mul: {} <- {} + {}", dest, o1, o2)
+            },
+            IntcodeInstruction::LoadInput{dest} => {
+                write!(f, "in: {}", dest)
+            },
+            IntcodeInstruction::Output{val} => {
+                write!(f, "out: {}", val)
+            },
+            IntcodeInstruction::JumpIfTrue{predicate, target} => {
+                write!(f, "jnz: {} if {}", target, predicate)
+            },
+            IntcodeInstruction::JumpIfFalse{predicate, target} => {
+                write!(f, "jez: {} if not {}", target, predicate)
+            },
+            IntcodeInstruction::LessThan{o1, o2, dest} => {
+                write!(f, "lt: {} <- {} < {}", dest, o1, o2)
+            },
+            IntcodeInstruction::Equals{o1, o2, dest} => {
+                write!(f, "eq: {} <- {} == {}", dest, o1, o2)
+            },
+            IntcodeInstruction::AdjustRelativeBase{val} => {
+                write!(f, "arb {}", val)
+            },
+            IntcodeInstruction::Exit => write!(f, "hlt"),
+        }
+    }
+}
+
+enum Assembly {
+    Data(i64),
+    Instruction(Vec<i64>, IntcodeInstruction),
+}
+
+impl std::fmt::Display for Assembly {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Assembly::Data(data) => write!(f, "{:<30} ; data", data),
+            Assembly::Instruction(raw, instr) => write!(f, "{:<30} ; {}", format!("{:?}", raw), instr),
+        }
+    }
+}
+
 pub struct IntcodeProgram {
     memory: Vec<i64>,
     extended_memory: HashMap<usize, i64>,
@@ -55,7 +114,7 @@ pub struct IntcodeProgram {
     output: Box<dyn io::OutputDevice + Send>,
 }
 
-fn instruction_param_length(opcode: u64) -> Result<usize> {
+fn instruction_param_length(opcode: i64) -> Result<usize> {
     match opcode {
         1 => Ok(3),
         2 => Ok(3),
@@ -130,7 +189,7 @@ impl IntcodeProgram {
     // pointer to the subsequent yet-unfetched one, or returns error
     fn get_instruction(&mut self) -> Result<IntcodeInstruction> {
         let curr_ip = self.ip;
-        let instruction = self.load_position(curr_ip) as u64;
+        let instruction = self.load_position(curr_ip);
         let opcode = instruction % 100;
         let num_params = instruction_param_length(opcode)?;
 
@@ -285,5 +344,24 @@ impl IntcodeProgram {
     pub fn get_all_output(&mut self) -> Vec<i64> {
         std::iter::repeat_with(|| self.output.get())
             .take_while(|o| o.is_some()).map(|o| o.unwrap()).collect()
+    }
+
+    pub fn disassemble(&mut self) {
+        std::iter::repeat_with(|| {
+            let curr_ip = self.ip;
+            let curr_opcode = self.load_position(curr_ip) % 100;
+            if self.ip >= self.memory.len() {
+                None
+            } else if let Ok(instr) = self.get_instruction() {
+                Some((curr_ip, Assembly::Instruction(
+                    (curr_ip..(curr_ip + 1 + instruction_param_length(curr_opcode).unwrap()))
+                        .map(|i| self.memory[i]).collect(),
+                    instr
+                )))
+            } else {
+                self.ip += 1;
+                Some((curr_ip, Assembly::Data(self.load_position(curr_ip))))
+            }
+        }).take_while(|a| a.is_some()).map(|a| a.unwrap()).for_each(|(ip, a)| println!("{:>10} : {}", ip, a));
     }
 }
