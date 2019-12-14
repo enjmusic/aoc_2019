@@ -71,37 +71,14 @@ impl Screen {
         }
     }
 
-    fn get_paddle_and_ball_locations(&self) -> (i64, (i64, i64)) {
-        let (mut paddle_x, mut ball_location) = (0, (0, 0));
-
+    fn get_current_move(&self) -> i64 {
+        let (mut paddle_x, mut ball_x) = (0, 0);
         self.tiles.iter().for_each(|(c, tid)| { match tid {
             TileID::Paddle => paddle_x = (*c).0,
-            TileID::Ball => ball_location = *c,
+            TileID::Ball => ball_x = (*c).0,
             _ => (),
         }});
-
-        (paddle_x, ball_location)
-    }
-}
-
-struct Predictor {
-    ball_position: (i64, i64),
-    ball_velocity: (i64, i64),
-}
-
-impl Predictor {
-    fn new() -> Predictor {
-        Predictor{
-            ball_position: (0, 0),
-            ball_velocity: (0, 0),
-        }
-    }
-
-    fn update(&mut self, screen: &Screen) -> i64 {
-        let (p, b) = screen.get_paddle_and_ball_locations();
-        self.ball_position = b;
-        self.ball_velocity = (b.0 - self.ball_position.0, b.1 - self.ball_position.1);
-        (self.ball_position.0 + self.ball_velocity.0).cmp(&p) as i64
+        ball_x.cmp(&paddle_x) as i64
     }
 }
 
@@ -125,9 +102,7 @@ fn part2(input: &String, display: bool) -> Result<()> {
 
     let mut program = IntcodeProgram::from_memory(memory);
     let mut screen = Screen{ tiles: HashMap::new() };
-
     let mut score = 0;
-    let mut predictor = Predictor::new();
     let mut outputs = vec![];
     loop {
         match program.execute_until_event()? {
@@ -138,15 +113,14 @@ fn part2(input: &String, display: bool) -> Result<()> {
                     screen.display();
                     thread::sleep(time::Duration::from_millis(125));
                 }
-                program.give_input(predictor.update(&screen));
+                program.give_input(screen.get_current_move());
             },
             Event::ProducedOutput => {
                 outputs.push(program.get_output().unwrap());
                 if outputs.len() == 3 {
-                    if outputs[0] == -1 && outputs[1] == 0 {
-                        score = outputs[2];
-                    } else {
-                        screen.draw(outputs[0], outputs[1], outputs[2])?;
+                    match (outputs[0], outputs[1]) {
+                        (-1, 0) => score = outputs[2],
+                        (x, y) => screen.draw(x, y, outputs[2])?,
                     }
                     outputs.clear();
                 }
