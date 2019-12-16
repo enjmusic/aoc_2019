@@ -15,24 +15,27 @@ fn apply_fft(vals: &Vec<i64>) -> Vec<i64> {
     let mut out = vec![0; vals.len()];
     let mut partial_sums = vec![0; vals.len()];
     let mut curr_sum = 0;
+    let length = vals.len();
+    let split_point = length / 2;
 
-    for i in (0..vals.len()).rev() {
+    for i in (0..length).rev() {
         curr_sum += vals[i];
         partial_sums[i] = curr_sum;
-        out[i] = curr_sum.abs() % 10;
+        if i >= split_point { out[i] = curr_sum.abs() % 10 };
     }
 
-    for i in 0..(vals.len() / 2) {
+    for i in 0..split_point {
         let mut range = (i, 1 + i * 2);
-        let mut sum = 0;
-        while range.0 < vals.len() {
-            let phase = ((range.0 + 1) / (i + 1)) & 3; // 0 -> 0, 1 -> 1, 2 -> -1, 3 -> 0
-            if phase & 1 != 0 {
-                let end_of_range = if range.1 >= vals.len() { 0 } else { partial_sums[range.1] };
-                let sum_of_range = partial_sums[range.0] - end_of_range;
-                sum += if phase == 1 { sum_of_range } else { -sum_of_range };
-            }
-            range = (range.1, range.1 + i + 1);
+        let (mut phase, mut sum) = (1, 0);
+        while range.0 < length {
+            let sum_of_range = if range.1 >= length {
+                partial_sums[range.0]
+            } else {
+                partial_sums[range.0] - partial_sums[range.1]
+            };
+            sum += if phase == 1 { sum_of_range } else { -sum_of_range };
+            range = (range.1 + i + 1, range.1 + (i << 1) + 2);
+            phase = -phase;
         }
         out[i] = sum.abs() % 10;
     }
