@@ -13,12 +13,26 @@ struct Cli {
 
 fn apply_fft(vals: &Vec<i64>) -> Vec<i64> {
     let mut out = vec![0; vals.len()];
+    let mut partial_sums = vec![0; vals.len()];
+    let mut curr_sum = 0;
 
-    for i in 0..vals.len() {
+    for i in (0..vals.len()).rev() {
+        curr_sum += vals[i];
+        partial_sums[i] = curr_sum;
+        out[i] = curr_sum.abs() % 10;
+    }
+
+    for i in 0..(vals.len() / 2) {
+        let mut range = (i, 1 + i * 2);
         let mut sum = 0;
-        for j in i..vals.len() { // Skip zeroes in upper-diagonal part of transform
-            let phase = ((j + 1) / (i + 1)) & 3; // 0 -> 0, 1 -> 1, 2 -> -1, 3 -> 0
-            if phase & 1 != 0 { sum += if phase == 1 { vals[j] } else { -vals[j] }; }
+        while range.0 < vals.len() {
+            let phase = ((range.0 + 1) / (i + 1)) & 3; // 0 -> 0, 1 -> 1, 2 -> -1, 3 -> 0
+            if phase & 1 != 0 {
+                let end_of_range = if range.1 >= vals.len() { 0 } else { partial_sums[range.1] };
+                let sum_of_range = partial_sums[range.0] - end_of_range;
+                sum += if phase == 1 { sum_of_range } else { -sum_of_range };
+            }
+            range = (range.1, range.1 + i + 1);
         }
         out[i] = sum.abs() % 10;
     }
@@ -38,6 +52,19 @@ fn part1(vals: &Vec<i64>) {
 }
 
 fn part2(vals: &Vec<i64>) {
+    let index = vals.iter().take(7).fold(0, |acc, val| val + acc * 10) as usize;
+    let mut input = vals.iter().cycle().take(vals.len() * 10000).map(|x| *x).collect::<Vec<i64>>();
+    for _ in 0..100 {
+        input = apply_fft(&input);
+    }
+    println!(
+        "First 8 digits at index {} after 100 FFTs: {}",
+        index,
+        (index..index + 8).map(|idx| input[idx].to_string()).collect::<String>()
+    );
+}
+
+fn part2_fast(vals: &Vec<i64>) {
     let index = vals.iter().take(7).fold(0, |acc, val| val + acc * 10) as usize;
     if index < vals.len() * 10000 / 2 {
         println!("Index {} not in predictable part of transformation matrix. Forget about it.", index);
@@ -76,6 +103,7 @@ fn main() -> Result<()> {
         c.to_digit(10).map(|x| x as i64).ok_or(From::from("Could not parse character to digit!"))
     }).collect::<Result<Vec<i64>>>()?;
     part1(&vals);
+    part2_fast(&vals);
     part2(&vals);
     Ok(())
 }
