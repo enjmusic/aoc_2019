@@ -15,9 +15,9 @@ struct Cli {
 
 struct RobotInput {
     sequence: String,
-    function_a: Vec<String>,
-    function_b: Vec<String>,
-    function_c: Vec<String>,
+    function_a: String,
+    function_b: String,
+    function_c: String,
 }
 
 #[derive(PartialEq, Copy, Clone)]
@@ -192,12 +192,12 @@ fn get_robot_input(
 ) -> Option<RobotInput> {
     for start_seq_length in 4..=10 {
         let start_seq_range = (0, start_seq_length);
-        let function_a = path[start_seq_range.0..start_seq_range.1].to_vec();
-        if function_a.join(",").len() > 20 { continue }
+        let function_a = path[start_seq_range.0..start_seq_range.1].to_vec().join(",");
+        if function_a.len() > 20 { continue }
         for end_seq_length in 4..=10 {
             let end_seq_range = (path.len() - end_seq_length, path.len());
-            let function_b = path[end_seq_range.0..end_seq_range.1].to_vec();
-            if function_b.join(",").len() > 20 { continue }
+            let function_b = path[end_seq_range.0..end_seq_range.1].to_vec().join(",");
+            if function_b.len() > 20 { continue }
 
             // Both the start and end sequences have passed the length test, let's try pairing
             // up all their combinations with each other and trying to turn the uncovered ranges
@@ -208,10 +208,10 @@ fn get_robot_input(
                         if uncovered_ranges.len() == 0 { continue }
                         if let Some(ranges) = get_as_same_length_if_possible(&uncovered_ranges, path) {
                             let function_c_range = ranges[0];
-                            let function_c = path[function_c_range.0..function_c_range.1].to_vec();
+                            let function_c = path[function_c_range.0..function_c_range.1].to_vec().join(",");
 
                             // Last 2 checks before we can be confident that we have a robot input
-                            if function_c.join(",").len() > 20 {
+                            if function_c.len() > 20 {
                                 continue // Function C doesn't pass length test
                             }
                             if start_combination.len() + end_combination.len() + ranges.len() > 10 {
@@ -288,13 +288,11 @@ fn part2(input: &String, grid: &mut Vec<Vec<char>>) -> Result<()> {
         memory[0] = 2;
         let mut program = IntcodeProgram::from_memory(memory);
 
-        // Input main movement routine
+        // Input main movement routine and functions, decline video feed
         input_line(&mut program, &robot_input.sequence);
-        // Input functions
-        input_line(&mut program, &(robot_input.function_a).join(","));
-        input_line(&mut program, &(robot_input.function_b).join(","));
-        input_line(&mut program, &(robot_input.function_c).join(","));
-        // Decline continuous video feed
+        input_line(&mut program, &robot_input.function_a);
+        input_line(&mut program, &robot_input.function_b);
+        input_line(&mut program, &robot_input.function_c);
         input_line(&mut program, &"n".to_owned());
 
         program.execute()?;
