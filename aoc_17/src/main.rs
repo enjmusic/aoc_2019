@@ -216,8 +216,8 @@ fn sequence_to_string(sequence: &Vec<Action>) -> String {
     sequence.iter().map(|f| f.stringify()).collect::<Vec<String>>().join(",")
 }
 
-fn input_function(program: &mut IntcodeProgram, function: &Vec<Action>) {
-    for c in sequence_to_string(function).chars() {
+fn input_line(program: &mut IntcodeProgram, line: &String) {
+    for c in line.chars() {
         program.give_input((c as u8) as i64);
     }
     program.give_input(10);
@@ -337,19 +337,13 @@ fn part2(input: &String, grid: &mut Vec<Vec<char>>) -> Result<()> {
         let mut program = IntcodeProgram::from_memory(memory);
 
         // Input main movement routine
-        for c in robot_input.sequence.chars() {
-            program.give_input((c as u8) as i64);
-        }
-        program.give_input(10);
-
+        input_line(&mut program, &robot_input.sequence);
         // Input functions
-        input_function(&mut program, &robot_input.function_a);
-        input_function(&mut program, &robot_input.function_b);
-        input_function(&mut program, &robot_input.function_c);
-
+        input_line(&mut program, &sequence_to_string(&robot_input.function_a));
+        input_line(&mut program, &sequence_to_string(&robot_input.function_b));
+        input_line(&mut program, &sequence_to_string(&robot_input.function_c));
         // Decline continuous video feed
-        program.give_input(('n' as u8) as i64);
-        program.give_input(10);
+        input_line(&mut program, &"n".to_owned());
 
         program.execute()?;
         if let Some(dust_collected) = program.get_all_output().last() {
