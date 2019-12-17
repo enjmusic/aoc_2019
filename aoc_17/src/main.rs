@@ -1,3 +1,4 @@
+use std::cmp;
 use std::fs::File;
 use std::io::{prelude::*, BufReader};
 use std::path::PathBuf;
@@ -12,28 +13,21 @@ struct Cli {
     file: PathBuf,
 }
 
+struct RobotInput {
+    sequence: String,
+    function_a: Vec<String>,
+    function_b: Vec<String>,
+    function_c: Vec<String>,
+}
+
 #[derive(PartialEq, Copy, Clone)]
 enum Dir {
     North = 0, South = 1, East = 2, West = 3
 }
 
-#[derive(Copy, Clone, Debug, PartialEq)]
-enum Action {
-    Turn(u8), // 0 is left, 1 is right
-    Move(usize), // num squares moved
-}
-
-impl Action {
-    fn stringify(&self) -> String {
-        match self {
-            Action::Turn(d) => if *d == 0 { "L".to_owned() } else { "R".to_owned() },
-            Action::Move(d) => format!("{}", d)
-        }
-    }
-}
-
 impl Dir {
-    fn can_apply(&self, loc: (usize, usize), dimensions: (usize, usize), grid: &Vec<Vec<char>>) -> bool {
+    fn can_apply(&self, loc: (usize, usize), grid: &Vec<Vec<char>>) -> bool {
+        let dimensions = (grid[0].len(), grid.len());
         let can_move = match self {
             Dir::North => loc.1 > 0,
             Dir::South => loc.1 < (dimensions.1 - 1),
@@ -68,8 +62,11 @@ fn is_scaffolding(c: char) -> bool {
     c == '#' || c == '^' || c == '<' || c == '>' || c == 'v'
 }
 
-fn get_remaining_actions(num_actions: usize, a: &Vec<(usize, usize)>, b: &Vec<(usize, usize)>) -> Option<Vec<(usize, usize)>> {
-    let mut covered = vec![false; num_actions];
+// For a list of length l, get the ranges of indices in that list that are not
+// covered by the ranges in a and b. If any ranges in a or b overlap, no ranges
+// will be returned. If a and b cover the list entirely, returns an empty vec.
+fn get_uncovered_ranges(l: usize, a: &Vec<(usize, usize)>, b: &Vec<(usize, usize)>) -> Option<Vec<(usize, usize)>> {
+    let mut covered = vec![false; l];
     for range in a {
         for i in range.0..range.1 {
             if covered[i] { return None }
@@ -107,156 +104,28 @@ fn get_remaining_actions(num_actions: usize, a: &Vec<(usize, usize)>, b: &Vec<(u
     Some(out)
 }
 
-fn gcd(a: usize, b: usize) -> usize {
-    let mut params = if a >= b { (a, b) } else { (b, a) };
-    while params.1 != 0 {
-        params = (params.1, params.0 % params.1);
-    }
-    params.0
-}
-
-fn get_range_combinations_with_extra(ranges: &Vec<(usize, usize)>, extra: (usize, usize)) -> Vec<Vec<(usize, usize)>> {
-    let mut out = vec![];
-
-    for i in 0..(2 << ranges.len()) {
-        let mut mask = i;
-        let mut to_push = vec![];
-        for j in 0..ranges.len() {
-            if mask & 1 != 0 { to_push.push(ranges[j]); }
-            mask = mask >> 1;
-        }
-        to_push.push(extra);
-        out.push(to_push);
-    }
-
-    out
-}
-
-fn split_to_repeating_if_possible(
+// Try to split ranges into ranges of the same length where
+// each resulting range contains the same list of actions in
+// the path, or None if that task is impossible for these ranges
+fn get_as_same_length_if_possible(
     ranges: &Vec<(usize, usize)>,
-    actions: &Vec<Action>,
-    length: usize
+    path: &Vec<String>,
 ) -> Option<Vec<(usize, usize)>> {
-    let mut out = vec![];
+    // Assume length of pattern will be the length of the shortest range
+    let length = ranges.iter().fold(std::usize::MAX, |acc, (l, u)| cmp::min(acc, u - l));
     let first_range = ranges[0];
-    let theorized_action_seq = actions[first_range.0..first_range.0 + length].to_vec();
+    let theorized_action_seq = path[first_range.0..first_range.0 + length].to_vec();
+    let mut out = vec![];
     for range in ranges {
         for i in (range.0..range.1).step_by(length) {
-            if theorized_action_seq != actions[i..i + length].to_vec() { return None }
+            if theorized_action_seq != path[i..i + length].to_vec() { return None }
             out.push((i, i + length));
         }
     }
     Some(out)
 }
 
-struct RobotInput {
-    sequence: String,
-    function_a: Vec<Action>,
-    function_b: Vec<Action>,
-    function_c: Vec<Action>,
-}
-
-fn get_three_action_sequences(
-    actions: &Vec<Action>,
-    end_substring_occurrences: &Vec<Vec<(usize, usize)>>,
-    start_substring_occurrences: &Vec<Vec<(usize, usize)>>,
-) -> Option<RobotInput> {
-    for (i, e) in end_substring_occurrences.iter().enumerate() {
-        if e.len() == 0 { continue }
-        // TODO: filter out sequences whose strings are too long
-        let end_range = (actions.len() - (i + 4), actions.len());
-        for (j, s) in start_substring_occurrences.iter().enumerate() {
-            if s.len() == 0 { continue }
-            // TODO: filter out sequences whose strings are too long
-            let start_range = (0, j + 4);
-            for end_combo in get_range_combinations_with_extra(e, end_range) {
-                for start_combo in get_range_combinations_with_extra(s, start_range) {
-                    if let Some(remaining_ranges) = get_remaining_actions(actions.len(), &end_combo, &start_combo) {
-                        if remaining_ranges.len() == 0 { continue }
-                        let mut gcd_rem = remaining_ranges[0].1 - remaining_ranges[0].0;
-                        for i in 1..remaining_ranges.len() {
-                            gcd_rem = gcd(gcd_rem, remaining_ranges[i].1 - remaining_ranges[i].0);
-                        }
-                        if let Some(ranges) = split_to_repeating_if_possible(&remaining_ranges, &actions, gcd_rem) {
-                            let pattern1_range = start_combo[0];
-                            let pattern2_range = end_combo[0];
-                            let pattern3_range = ranges[0];
-
-                            if pattern3_range.1 - pattern3_range.0 > 10 {
-                                continue // Pattern 3 too long
-                            }
-
-                            if start_combo.len() + end_combo.len() + ranges.len() > 10 {
-                                continue // Total sequence too long
-                            }
-
-                            let pattern1_by_start = start_combo.iter().map(|(l, _)| (*l, 'A')).collect::<Vec<(usize, char)>>();
-                            let pattern2_by_start = end_combo.iter().map(|(l, _)| (*l, 'B')).collect::<Vec<(usize, char)>>();
-                            let pattern3_by_start = ranges.iter().map(|(l, _)| (*l, 'C')).collect::<Vec<(usize, char)>>();
-                            let mut combined = [&pattern1_by_start[..], &pattern2_by_start[..], &pattern3_by_start[..]].concat().to_vec();
-                            combined.sort_by(|(a, _), (b, _)| a.cmp(b));
-
-                            return Some(RobotInput{
-                                sequence: combined.iter().map(|(_, c)| (*c).to_string()).collect::<Vec<String>>().join(","),
-                                function_a: actions[pattern1_range.0..pattern1_range.1].to_vec(),
-                                function_b: actions[pattern2_range.0..pattern2_range.1].to_vec(),
-                                function_c: actions[pattern3_range.0..pattern3_range.1].to_vec(),
-                            });
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    None
-}
-
-fn sequence_to_string(sequence: &Vec<Action>) -> String {
-    sequence.iter().map(|f| f.stringify()).collect::<Vec<String>>().join(",")
-}
-
-fn input_line(program: &mut IntcodeProgram, line: &String) {
-    for c in line.chars() {
-        program.give_input((c as u8) as i64);
-    }
-    program.give_input(10);
-}
-
-fn part1(input: &String) -> Result<Vec<Vec<char>>> {
-    let mut program = IntcodeProgram::from_raw_input(input)?;
-    program.execute()?;
-    let mut grid = vec![vec![]];
-    for c in program.get_all_output() {
-        if c == 10 {
-            grid.push(vec![]);
-        } else {
-            grid.last_mut().unwrap().push((c as u8) as char);
-        }
-    }
-
-    for i in (0..grid.len()).rev() {
-        if grid[i].len() == 0 { grid.pop(); } else { break }
-    }
-
-    let mut alignment_sum = 0;
-    for i in 1..(grid.len() - 1) {
-        for j in 1..(grid[0].len() - 1) {
-            let mut is_intersection = is_scaffolding(grid[i][j]);
-            is_intersection = is_intersection && is_scaffolding(grid[i+1][j]);
-            is_intersection = is_intersection && is_scaffolding(grid[i-1][j]);
-            is_intersection = is_intersection && is_scaffolding(grid[i][j+1]);
-            is_intersection = is_intersection && is_scaffolding(grid[i][j-1]);
-            if is_intersection { alignment_sum += i * j; }
-        }
-    }
-
-    println!("Alignment sum: {}", alignment_sum);
-    Ok(grid)
-}
-
-fn part2(input: &String, grid: &mut Vec<Vec<char>>) -> Result<()> {
-    let dimensions = (grid[0].len(), grid.len());
+fn get_path(grid: &Vec<Vec<char>>) -> Vec<String> {
     let mut robot_loc = (0, 0);
     let mut robot_dir = Dir::North;
     grid.iter().enumerate().for_each(|(y, row)| row.iter().enumerate().for_each(|(x, tile)| {
@@ -271,67 +140,158 @@ fn part2(input: &String, grid: &mut Vec<Vec<char>>) -> Result<()> {
         }
     }));
 
-    grid[robot_loc.1][robot_loc.0] = '#';
     let mut num_in_dir = 0;
-    let mut actions: Vec<Action> = vec![];
+    let mut path: Vec<String> = vec![];
     loop {
-        if robot_dir.can_apply(robot_loc, dimensions, &grid) {
+        if robot_dir.can_apply(robot_loc, &grid) {
             num_in_dir += 1;
             robot_loc = robot_dir.apply(robot_loc);
             continue
         }
         let mut found_turn = false;
         for (idx, option) in Dir::get_all_perpendicular(robot_dir).iter().enumerate() {
-            if option.can_apply(robot_loc, dimensions, &grid) {
-                if num_in_dir != 0 { actions.push(Action::Move(num_in_dir)) };
+            if option.can_apply(robot_loc, &grid) {
+                if num_in_dir != 0 { path.push(num_in_dir.to_string()) };
                 num_in_dir = 0;
                 robot_dir = *option;
-                actions.push(Action::Turn(idx as u8));
+                path.push(if idx == 0 { "L".to_owned() } else { "R".to_owned() });
                 found_turn = true;
                 break
             }
         }
         if !found_turn {
-            actions.push(Action::Move(num_in_dir));
+            path.push(num_in_dir.to_string());
             break
         }
     }
+    path
+}
 
-    let min_len = 4;
+// For a given path subsequence (either at the beginning or the end of the path),
+// get the spots elsewhere in the path where it's repeated and get all combinations
+// of those with the original path subsequence included.
+fn get_subsequence_repeat_combinations_including_self(range: (usize, usize), path: &Vec<String>) -> Vec<Vec<(usize, usize)>> {
+    let subsequence = path[range.0..range.1].to_vec();
+    let mut repeats = vec![];
+    let range_size = range.1 - range.0;
+    let scan_range = if range.0 == 0 {
+        (range.1..path.len() - range.1)
+    } else {
+        (0..path.len() - 2 * range_size)
+    };
 
-    let substrings_at_end = (min_len..=10).map(|l| actions[actions.len() - l..actions.len()].to_vec())
-        .collect::<Vec<Vec<Action>>>();
-    
-    let mut end_substring_occurrences = vec![];
-    for i in min_len..=10 {
-        let mut to_concat = vec![];
-        for j in 0..actions.len() - (2 * i) {
-            if substrings_at_end[i - min_len] == actions[j..j+i].to_vec() {
-                to_concat.push((j, j+i));
-            }
-        }
-        end_substring_occurrences.push(to_concat);
+    for i in scan_range { // Get repeats
+        if path[i..i + range_size].to_vec() == subsequence { repeats.push((i, i + range_size)); }
     }
 
-    let substrings_at_start = (min_len..=10).map(|l| actions[0..l].to_vec())
-        .collect::<Vec<Vec<Action>>>();
+    (0..(2 << repeats.len())).map(|mut mask| { // Get combinations
+        let mut curr_combination = vec![];
+        for j in 0..repeats.len() {
+            if mask & 1 != 0 { curr_combination.push(repeats[j]); }
+            mask = mask >> 1;
+        }
+        curr_combination.push(range);
+        curr_combination
+    }).collect::<Vec<Vec<(usize, usize)>>>()
+}
 
-    let mut start_substring_occurrences = vec![];
-    for i in min_len..=10 {
-        let mut to_concat = vec![];
-        for j in i..actions.len() - i {
-            if substrings_at_start[i - min_len] == actions[j..j+i].to_vec() {
-                to_concat.push((j, j+i));
+fn get_robot_input(
+    path: &Vec<String>,
+) -> Option<RobotInput> {
+    for start_seq_length in 4..=10 {
+        let start_seq_range = (0, start_seq_length);
+        let function_a = path[start_seq_range.0..start_seq_range.1].to_vec();
+        if function_a.join(",").len() > 20 { continue }
+        for end_seq_length in 4..=10 {
+            let end_seq_range = (path.len() - end_seq_length, path.len());
+            let function_b = path[end_seq_range.0..end_seq_range.1].to_vec();
+            if function_b.join(",").len() > 20 { continue }
+
+            // Both the start and end sequences have passed the length test, let's try pairing
+            // up all their combinations with each other and trying to turn the uncovered ranges
+            // into a third sequence to form our three functions for our robot input
+            for start_combination in get_subsequence_repeat_combinations_including_self(start_seq_range, path) {
+                for end_combination in get_subsequence_repeat_combinations_including_self(end_seq_range, path) {
+                    if let Some(uncovered_ranges) = get_uncovered_ranges(path.len(), &start_combination, &end_combination) {
+                        if uncovered_ranges.len() == 0 { continue }
+                        if let Some(ranges) = get_as_same_length_if_possible(&uncovered_ranges, path) {
+                            let function_c_range = ranges[0];
+                            let function_c = path[function_c_range.0..function_c_range.1].to_vec();
+
+                            // Last 2 checks before we can be confident that we have a robot input
+                            if function_c.join(",").len() > 20 {
+                                continue // Function C doesn't pass length test
+                            }
+                            if start_combination.len() + end_combination.len() + ranges.len() > 10 {
+                                continue // Total sequence too long
+                            }
+
+                            let function_a_uses_with_range_start = start_combination.iter().map(|(l, _)| (*l, 'A'))
+                                .collect::<Vec<(usize, char)>>();
+                            
+                            let function_b_uses_with_range_start = end_combination.iter().map(|(l, _)| (*l, 'B'))
+                                .collect::<Vec<(usize, char)>>();
+
+                            let function_c_uses_with_range_start = ranges.iter().map(|(l, _)| (*l, 'C'))
+                                .collect::<Vec<(usize, char)>>();
+
+                            // Combine function uses, sort by range start, and transform into sequence
+                            let mut function_uses_combined = [
+                                &function_a_uses_with_range_start[..],
+                                &function_b_uses_with_range_start[..],
+                                &function_c_uses_with_range_start[..]
+                            ].concat();
+                            function_uses_combined.sort_by(|(a, _), (b, _)| a.cmp(b));
+                            let sequence = function_uses_combined.iter().map(|(_, c)| (*c).to_string())
+                                .collect::<Vec<String>>().join(",");
+
+                            return Some(RobotInput{
+                                sequence: sequence,
+                                function_a: function_a,
+                                function_b: function_b,
+                                function_c: function_c,
+                            });
+                        }
+                    }
+                }
             }
         }
-        start_substring_occurrences.push(to_concat);
+    }
+    None
+}
+
+fn input_line(program: &mut IntcodeProgram, line: &String) {
+    for c in line.chars() { program.give_input((c as u8) as i64); }
+    program.give_input(10);
+}
+
+fn part1(input: &String) -> Result<Vec<Vec<char>>> {
+    let mut program = IntcodeProgram::from_raw_input(input)?;
+    program.execute()?;
+
+    let (mut grid, mut curr_line) = (vec![], vec![]);
+    for c in program.get_all_output() {
+        if c == 10 {
+            if curr_line.len() != 0 { grid.push(curr_line.clone()); curr_line = vec![]; };
+        } else {
+            curr_line.push((c as u8) as char);
+        }
     }
 
-    if let Some(robot_input) = get_three_action_sequences(
-        &actions,
-        &end_substring_occurrences,
-        &start_substring_occurrences,
-    ) {
+    let mut alignment_sum = 0;
+    for i in 1..(grid.len() - 1) {
+        for j in 1..(grid[0].len() - 1) {
+            let inter = vec![Dir::North, Dir::South, Dir::East, Dir::West].iter().all(|d| d.can_apply((j, i), &grid));
+            if inter && is_scaffolding(grid[i][j]) { alignment_sum += i * j; }
+        }
+    }
+
+    println!("Alignment sum: {}", alignment_sum);
+    Ok(grid)
+}
+
+fn part2(input: &String, grid: &mut Vec<Vec<char>>) -> Result<()> {
+    if let Some(robot_input) = get_robot_input(&get_path(&grid)) {
         let mut memory = IntcodeProgram::raw_to_memory(input)?;
         memory[0] = 2;
         let mut program = IntcodeProgram::from_memory(memory);
@@ -339,9 +299,9 @@ fn part2(input: &String, grid: &mut Vec<Vec<char>>) -> Result<()> {
         // Input main movement routine
         input_line(&mut program, &robot_input.sequence);
         // Input functions
-        input_line(&mut program, &sequence_to_string(&robot_input.function_a));
-        input_line(&mut program, &sequence_to_string(&robot_input.function_b));
-        input_line(&mut program, &sequence_to_string(&robot_input.function_c));
+        input_line(&mut program, &(robot_input.function_a).join(","));
+        input_line(&mut program, &(robot_input.function_b).join(","));
+        input_line(&mut program, &(robot_input.function_c).join(","));
         // Decline continuous video feed
         input_line(&mut program, &"n".to_owned());
 
