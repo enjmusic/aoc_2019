@@ -48,12 +48,12 @@ impl Dir {
         }
     }
 
-    fn get_all_perpendicular(d: Dir) -> Vec<Dir> {
+    fn get_turn_options(d: Dir) -> Vec<(String, Dir)> {
         match d {
-            Dir::North => vec![Dir::West, Dir::East],
-            Dir::South => vec![Dir::East, Dir::West],
-            Dir::East => vec![Dir::North, Dir::South],
-            Dir::West => vec![Dir::South, Dir::North],
+            Dir::North => vec![("L".to_owned(), Dir::West), ("R".to_owned(), Dir::East)],
+            Dir::South => vec![("L".to_owned(), Dir::East), ("R".to_owned(), Dir::West)],
+            Dir::East => vec![("L".to_owned(), Dir::North), ("R".to_owned(), Dir::South)],
+            Dir::West => vec![("L".to_owned(), Dir::South), ("R".to_owned(), Dir::North)],
         }
     }
 }
@@ -85,23 +85,18 @@ fn get_uncovered_ranges(l: usize, a: &Vec<(usize, usize)>, b: &Vec<(usize, usize
     }).collect::<Vec<usize>>();
     if uncovered_indices.len() == 0 { return Some(vec![]); }
 
-    let mut range_start = uncovered_indices[0];
-    if uncovered_indices.len() == 1 { return Some(vec![(range_start, range_start + 1)]); }
-
-    let mut out: Vec<(usize, usize)> = vec![];
-    let mut range_len = 1;
-    for i in 1..uncovered_indices.len() {
-        let curr_idx = uncovered_indices[i];
-        if curr_idx - uncovered_indices[i - 1] == 1 {
-            range_len += 1;
+    let mut prev = uncovered_indices[0] - 1; // Dummy value to help with our comparisons
+    let mut ranges = vec![vec![]];
+    for i in uncovered_indices {
+        if i - prev == 1 {
+            ranges.last_mut().unwrap().push(i);
         } else {
-            out.push((range_start, range_start + range_len));
-            range_start = curr_idx;
-            range_len = 1;
+            ranges.push(vec![i]);
         }
+        prev = i;
     }
-    out.push((range_start, range_start + range_len));
-    Some(out)
+    
+    Some(ranges.iter().map(|members| (members[0], members.last().unwrap() + 1)).collect::<Vec<(usize, usize)>>())
 }
 
 // Try to split ranges into ranges of the same length where
@@ -140,29 +135,26 @@ fn get_path(grid: &Vec<Vec<char>>) -> Vec<String> {
         }
     }));
 
-    let mut num_in_dir = 0;
     let mut path: Vec<String> = vec![];
     loop {
-        if robot_dir.can_apply(robot_loc, &grid) {
-            num_in_dir += 1;
+        let mut traveled_straight = 0;
+        while robot_dir.can_apply(robot_loc, &grid) { // Go straight as far as possible
+            traveled_straight += 1;
             robot_loc = robot_dir.apply(robot_loc);
-            continue
         }
+        if traveled_straight != 0 { path.push(traveled_straight.to_string()); }
+
         let mut found_turn = false;
-        for (idx, option) in Dir::get_all_perpendicular(robot_dir).iter().enumerate() {
+        for (action, option) in Dir::get_turn_options(robot_dir) {
             if option.can_apply(robot_loc, &grid) {
-                if num_in_dir != 0 { path.push(num_in_dir.to_string()) };
-                num_in_dir = 0;
-                robot_dir = *option;
-                path.push(if idx == 0 { "L".to_owned() } else { "R".to_owned() });
+                robot_dir = option;
+                path.push(action);
                 found_turn = true;
                 break
             }
         }
-        if !found_turn {
-            path.push(num_in_dir.to_string());
-            break
-        }
+
+        if !found_turn { break }
     }
     path
 }
