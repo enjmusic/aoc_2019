@@ -1,6 +1,8 @@
 use std::fs::File;
 use std::io::{prelude::*, BufReader};
 use std::path::PathBuf;
+use std::sync::mpsc::{self, Sender, Receiver};
+use std::thread;
 use std::collections::{HashMap, HashSet, VecDeque};
 use structopt::StructOpt;
 
@@ -12,34 +14,59 @@ struct Cli {
     file: PathBuf,
 }
 
-struct TopologicalOrderingIterator {
+struct TopologicalOrderingGenerator {
     dependencies: HashMap<char, HashSet<char>>,
     in_degree: HashMap<char, usize>,
-    done: bool,
+    path: Vec<char>,
+    undiscovered: HashSet<char>,
+    sender: Sender<Vec<char>>,
 }
 
-impl TopologicalOrderingIterator {
-    fn from_dependencies(deps: HashMap<char, HashSet<char>>) -> TopologicalOrderingIterator {
-        let mut in_degree = HashMap::new();
+impl TopologicalOrderingGenerator {
+    fn new(deps: HashMap<char, HashSet<char>>, sender: Sender<Vec<char>>) -> TopologicalOrderingGenerator {
+        let mut in_degree = deps.keys().map(|k| (*k, 0)).collect::<HashMap<char, usize>>();
         for (_, depended_on) in &deps {
             for d in depended_on {
-                let entry = in_degree.entry(*d).or_insert(0);
-                *entry += 1;
+                in_degree.entry(*d).and_modify(|e| *e += 1);
             }
         }
-        TopologicalOrderingIterator{
+        TopologicalOrderingGenerator{
             dependencies: deps,
-            in_degree: in_degree,
-            done: false,
+            in_degree: in_degree.clone(),
+            path: vec![],
+            undiscovered: in_degree.keys().map(|k| *k).collect::<HashSet<char>>(),
+            sender: sender,
         }
     }
-}
 
-impl Iterator for TopologicalOrderingIterator {
-    type Item = Vec<char>;
+    fn push_key(&mut self, key: char) {
+        self.undiscovered.remove(&key);
+        self.path.push(key);
+        for depended_on in &self.dependencies[&key] {
+            self.in_degree.entry(*depended_on).and_modify(|e| *e -= 1 );
+        }
+    }
 
-    fn next(&mut self) -> Option<Vec<char>> {
-        None
+    fn pop_key(&mut self) {
+        let popped = self.path.pop().unwrap();
+        self.undiscovered.insert(popped);
+        for depended_on in &self.dependencies[&popped] {
+            self.in_degree.entry(*depended_on).and_modify(|e| *e += 1 );
+        }
+    }
+
+    fn generate_all(&mut self) {
+        for key in self.undiscovered.clone() {
+            if *self.in_degree.get(&key).unwrap_or(&0) == 0 {
+                self.push_key(key);
+                self.generate_all();
+                self.pop_key();
+            }
+        }
+
+        if self.path.len() == self.in_degree.len() {
+            self.sender.send(self.path.clone()).unwrap();
+        }
     }
 }
 
@@ -65,13 +92,29 @@ impl KeySolver {
     }
 
     fn get_shortest_path(&mut self) -> usize {
+        let (tx, rx): (Sender<Vec<char>>, Receiver<Vec<char>>) = mpsc::channel();
+        let mut generator = TopologicalOrderingGenerator::new(self.dependencies.clone(), tx);
+        thread::spawn(move || generator.generate_all());
+
         let mut shortest = std::usize::MAX;
-        for path in TopologicalOrderingIterator::from_dependencies(self.dependencies.clone()) {
-            let mut length = self.entrance_to_keys[&path[0]];
-            for i in 1..path.len() {
-                length += self.keys_to_keys[&path[i - 1]][&path[i]];
+        let mut paths_checked = 0;
+        let mut last_checkin = 0;
+        loop {
+            match rx.recv() {
+                Ok(path) => {
+                    let mut length = self.entrance_to_keys[&path[0]];
+                    for i in 1..path.len() {
+                        length += self.keys_to_keys[&path[i - 1]][&path[i]];
+                    }
+                    if length < shortest { shortest = length; }
+                    paths_checked += 1;
+                    if paths_checked - last_checkin > 100000 {
+                        println!("Checked {} paths, best so far: {} ...", paths_checked, shortest);
+                        last_checkin = paths_checked;
+                    }
+                },
+                _ => break
             }
-            if length < shortest { shortest = length; }
         }
         shortest
     }
@@ -120,7 +163,7 @@ impl Grid {
             let (mut dist, point, mut deps) = frontier.pop_back().unwrap();
             visited.insert(point);
             let curr_char = self.data[point.1][point.0];
-            if curr_char.is_ascii_uppercase() { deps.insert(curr_char); }
+            if curr_char.is_ascii_uppercase() { deps.insert(curr_char.to_ascii_lowercase()); }
             if curr_char.is_ascii_lowercase() {
                 distances.insert(curr_char, dist);
                 dependencies.insert(curr_char, deps.clone());
