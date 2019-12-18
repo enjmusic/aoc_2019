@@ -62,18 +62,20 @@ fn is_scaffolding(c: char) -> bool {
     c == '#' || c == '^' || c == '<' || c == '>' || c == 'v'
 }
 
-// For a list of length l, get the ranges of indices in that list that are not
-// covered by the ranges in a and b. If any ranges in a or b overlap, no ranges
-// will be returned. If a and b cover the list entirely, returns an empty vec.
-fn get_uncovered_ranges(l: usize, a: &Vec<(usize, usize)>, b: &Vec<(usize, usize)>) -> Option<Vec<(usize, usize)>> {
-    let mut covered = vec![false; l];
-    for range in a {
-        for i in range.0..range.1 {
-            if covered[i] { return None }
-            covered[i] = true;
-        }
+// For a list of length l, set any ranges in prev_uncovered as uncovered and the
+// rest as covered. Then try to apply to_cover to the list. If to_cover overlaps
+// with a previously covered entry, no ranges will be returned. Otherwise, the
+// remaining uncovered ranges in the list will be returned.
+fn get_uncovered_ranges(
+    list_length: usize,
+    to_cover: &Vec<(usize, usize)>,
+    prev_uncovered: &Vec<(usize, usize)>
+) -> Option<Vec<(usize, usize)>> {
+    let mut covered = vec![true; list_length];
+    for range in prev_uncovered {
+        for i in range.0..range.1 { covered[i] = false; }
     }
-    for range in b {
+    for range in to_cover {
         for i in range.0..range.1 {
             if covered[i] { return None }
             covered[i] = true;
@@ -166,17 +168,11 @@ fn get_subsequence_repeat_combinations_including_self(range: (usize, usize), pat
     let subsequence = path[range.0..range.1].to_vec();
     let mut repeats = vec![];
     let range_size = range.1 - range.0;
-    let scan_range = if range.0 == 0 {
-        (range.1..path.len() - range.1)
-    } else {
-        (0..path.len() - 2 * range_size)
-    };
-
-    for i in scan_range { // Get repeats
+    for i in range.1..=path.len() - range_size { // Get repeats
         if path[i..i + range_size].to_vec() == subsequence { repeats.push((i, i + range_size)); }
     }
 
-    (0..(2 << repeats.len())).map(|mut mask| { // Get combinations
+    (0..(1 << repeats.len())).map(|mut mask| { // Get combinations
         let mut curr_combination = vec![];
         for j in 0..repeats.len() {
             if mask & 1 != 0 { curr_combination.push(repeats[j]); }
@@ -187,62 +183,78 @@ fn get_subsequence_repeat_combinations_including_self(range: (usize, usize), pat
     }).collect::<Vec<Vec<(usize, usize)>>>()
 }
 
+fn get_function_from_range(path: &Vec<String>, range: (usize, usize)) -> String {
+    path[range.0..range.1].to_vec().join(",")
+}
+
+fn make_robot_input(
+    path: &Vec<String>,
+    fn_a_uses: &Vec<(usize, usize)>,
+    fn_b_uses: &Vec<(usize, usize)>,
+    fn_c_uses: &Vec<(usize, usize)>,
+) -> RobotInput {
+    let fn_a_uses_with_range_start = fn_a_uses.iter().map(|(l, _)| (*l, 'A'))
+    .collect::<Vec<(usize, char)>>();
+    let fn_b_uses_with_range_start = fn_b_uses.iter().map(|(l, _)| (*l, 'B'))
+        .collect::<Vec<(usize, char)>>();
+    let fn_c_uses_with_range_start = fn_c_uses.iter().map(|(l, _)| (*l, 'C'))
+        .collect::<Vec<(usize, char)>>();
+
+    // Combine function uses, sort by range start, and transform into sequence
+    let mut fn_uses_combined = [
+        &fn_a_uses_with_range_start[..],
+        &fn_b_uses_with_range_start[..],
+        &fn_c_uses_with_range_start[..]
+    ].concat();
+    fn_uses_combined.sort_by(|(a, _), (b, _)| a.cmp(b));
+    let sequence = fn_uses_combined.iter().map(|(_, c)| (*c).to_string())
+        .collect::<Vec<String>>().join(",");
+        
+    RobotInput{
+        sequence: sequence,
+        function_a: if fn_a_uses.len() == 0 { "".to_owned() } else { get_function_from_range(path, fn_a_uses[0]) },
+        function_b: if fn_b_uses.len() == 0 { "".to_owned() } else { get_function_from_range(path, fn_b_uses[0]) },
+        function_c: if fn_c_uses.len() == 0 { "".to_owned() } else { get_function_from_range(path, fn_c_uses[0]) },
+    }
+}
+
 fn get_robot_input(
     path: &Vec<String>,
 ) -> Option<RobotInput> {
-    for start_seq_length in 4..=10 {
-        let start_seq_range = (0, start_seq_length);
-        let function_a = path[start_seq_range.0..start_seq_range.1].to_vec().join(",");
-        if function_a.len() > 20 { continue }
-        for end_seq_length in 4..=10 {
-            let end_seq_range = (path.len() - end_seq_length, path.len());
-            let function_b = path[end_seq_range.0..end_seq_range.1].to_vec().join(",");
-            if function_b.len() > 20 { continue }
+    for fn_a_length in 4..=10 {
+        let fn_a_range = (0, fn_a_length);
+        if get_function_from_range(path, fn_a_range).len() > 20 { continue }
+        for fn_a_ranges in get_subsequence_repeat_combinations_including_self(fn_a_range, path) {
+            if let Some(uncovered_after) = get_uncovered_ranges(path.len(), &fn_a_ranges, &vec![(0, path.len())]) {
+                if uncovered_after.len() == 0 {
+                    if fn_a_ranges.len() <= 10 {
+                        // We only need one function
+                        return Some(make_robot_input(path, &fn_a_ranges, &vec![], &vec![]));
+                    }
+                    continue
+                }
 
-            // Both the start and end sequences have passed the length test, let's try pairing
-            // up all their combinations with each other and trying to turn the uncovered ranges
-            // into a third sequence to form our three functions for our robot input
-            for start_combination in get_subsequence_repeat_combinations_including_self(start_seq_range, path) {
-                for end_combination in get_subsequence_repeat_combinations_including_self(end_seq_range, path) {
-                    if let Some(uncovered_ranges) = get_uncovered_ranges(path.len(), &start_combination, &end_combination) {
-                        if uncovered_ranges.len() == 0 { continue }
-                        if let Some(ranges) = get_as_same_length_if_possible(&uncovered_ranges, path) {
-                            let function_c_range = ranges[0];
-                            let function_c = path[function_c_range.0..function_c_range.1].to_vec().join(",");
-
-                            // Last 2 checks before we can be confident that we have a robot input
-                            if function_c.len() > 20 {
-                                continue // Function C doesn't pass length test
+                // Get candidates for function B in the first uncovered range
+                let fn_b_pool = uncovered_after[0];
+                for i in 4..=cmp::min(10, fn_b_pool.1 - fn_b_pool.0) {
+                    let fn_b_range = (fn_b_pool.0, fn_b_pool.0 + i);
+                    if get_function_from_range(path, fn_b_range).len() > 20 { continue }
+                    for fn_b_ranges in get_subsequence_repeat_combinations_including_self(fn_b_range, path) {
+                        if let Some(uncovered_after) = get_uncovered_ranges(path.len(), &fn_b_ranges, &uncovered_after) {
+                            if uncovered_after.len() == 0 {
+                                if fn_a_ranges.len() + fn_b_ranges.len() <= 10 {
+                                    // We only need two functions
+                                    return Some(make_robot_input(path, &fn_a_ranges, &fn_b_ranges, &vec![]));
+                                }
+                                continue
                             }
-                            if start_combination.len() + end_combination.len() + ranges.len() > 10 {
-                                continue // Total sequence too long
+
+                            if let Some(fn_c_ranges) = get_as_same_length_if_possible(&uncovered_after, path) {
+                                // Last 2 checks before we can be confident that we have a robot input
+                                if get_function_from_range(path, fn_c_ranges[0]).len() > 20 { continue }
+                                if fn_a_ranges.len() + fn_b_ranges.len() + fn_c_ranges.len() > 10 { continue }
+                                return Some(make_robot_input(path, &fn_a_ranges, &fn_b_ranges, &fn_c_ranges));
                             }
-
-                            let function_a_uses_with_range_start = start_combination.iter().map(|(l, _)| (*l, 'A'))
-                                .collect::<Vec<(usize, char)>>();
-                            
-                            let function_b_uses_with_range_start = end_combination.iter().map(|(l, _)| (*l, 'B'))
-                                .collect::<Vec<(usize, char)>>();
-
-                            let function_c_uses_with_range_start = ranges.iter().map(|(l, _)| (*l, 'C'))
-                                .collect::<Vec<(usize, char)>>();
-
-                            // Combine function uses, sort by range start, and transform into sequence
-                            let mut function_uses_combined = [
-                                &function_a_uses_with_range_start[..],
-                                &function_b_uses_with_range_start[..],
-                                &function_c_uses_with_range_start[..]
-                            ].concat();
-                            function_uses_combined.sort_by(|(a, _), (b, _)| a.cmp(b));
-                            let sequence = function_uses_combined.iter().map(|(_, c)| (*c).to_string())
-                                .collect::<Vec<String>>().join(",");
-
-                            return Some(RobotInput{
-                                sequence: sequence,
-                                function_a: function_a,
-                                function_b: function_b,
-                                function_c: function_c,
-                            });
                         }
                     }
                 }
