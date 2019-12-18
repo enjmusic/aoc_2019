@@ -18,12 +18,21 @@ struct TopologicalOrderingGenerator {
     dependencies: HashMap<char, HashSet<char>>,
     in_degree: HashMap<char, usize>,
     path: Vec<char>,
+    distance: usize,
     undiscovered: HashSet<char>,
-    sender: Sender<Vec<char>>,
+    sender: Sender<usize>,
+    entrance_to_keys: HashMap<char, usize>,
+    keys_to_keys: HashMap<char, HashMap<char, usize>>,
+    best_emitted: usize,
 }
 
 impl TopologicalOrderingGenerator {
-    fn new(deps: HashMap<char, HashSet<char>>, sender: Sender<Vec<char>>) -> TopologicalOrderingGenerator {
+    fn new(
+        deps: HashMap<char, HashSet<char>>,
+        sender: Sender<usize>,
+        entrance_to_keys: HashMap<char, usize>,
+        keys_to_keys: HashMap<char, HashMap<char, usize>>,
+    ) -> TopologicalOrderingGenerator {
         let mut in_degree = deps.keys().map(|k| (*k, 0)).collect::<HashMap<char, usize>>();
         for (_, depended_on) in &deps {
             for d in depended_on {
@@ -34,38 +43,63 @@ impl TopologicalOrderingGenerator {
             dependencies: deps,
             in_degree: in_degree.clone(),
             path: vec![],
+            distance: 0,
             undiscovered: in_degree.keys().map(|k| *k).collect::<HashSet<char>>(),
             sender: sender,
+            entrance_to_keys: entrance_to_keys,
+            keys_to_keys: keys_to_keys,
+            best_emitted: std::usize::MAX,
         }
     }
 
-    fn push_key(&mut self, key: char) {
+    fn push_key(&mut self, key: char) -> bool {
+        let dist = if self.path.len() == 0 {
+            0
+        } else {
+            self.keys_to_keys[self.path.last().unwrap()][&key]
+        };
+        let new_distance = self.distance + dist;
+        if new_distance >= self.best_emitted { return false }
+        self.distance = new_distance;
         self.undiscovered.remove(&key);
         self.path.push(key);
         for depended_on in &self.dependencies[&key] {
             self.in_degree.entry(*depended_on).and_modify(|e| *e -= 1 );
         }
+        true
     }
 
     fn pop_key(&mut self) {
-        let popped = self.path.pop().unwrap();
-        self.undiscovered.insert(popped);
-        for depended_on in &self.dependencies[&popped] {
+        let key = self.path.pop().unwrap();
+        self.undiscovered.insert(key);
+        for depended_on in &self.dependencies[&key] {
             self.in_degree.entry(*depended_on).and_modify(|e| *e += 1 );
         }
+        let dist = if self.path.len() == 0 {
+            0
+        } else {
+            self.keys_to_keys[self.path.last().unwrap()][&key]
+        };
+        self.distance -= dist;
     }
 
     fn generate_all(&mut self) {
         for key in self.undiscovered.clone() {
             if *self.in_degree.get(&key).unwrap_or(&0) == 0 {
-                self.push_key(key);
-                self.generate_all();
-                self.pop_key();
+                if self.push_key(key) {
+                    self.generate_all();
+                    self.pop_key();
+                }
             }
         }
 
         if self.path.len() == self.in_degree.len() {
-            self.sender.send(self.path.clone()).unwrap();
+            let dist = self.distance + self.entrance_to_keys[self.path.last().unwrap()];
+            if dist < self.best_emitted {
+                println!("Best path so far: {:?}", self.path);
+                self.best_emitted = self.distance;
+                self.sender.send(self.best_emitted).unwrap();
+            }
         }
     }
 }
@@ -92,26 +126,23 @@ impl KeySolver {
     }
 
     fn get_shortest_path(&mut self) -> usize {
-        let (tx, rx): (Sender<Vec<char>>, Receiver<Vec<char>>) = mpsc::channel();
-        let mut generator = TopologicalOrderingGenerator::new(self.dependencies.clone(), tx);
+        let (tx, rx): (Sender<usize>, Receiver<usize>) = mpsc::channel();
+        let mut generator = TopologicalOrderingGenerator::new(
+            self.dependencies.clone(),
+            tx,
+            self.entrance_to_keys.clone(),
+            self.keys_to_keys.clone()
+        );
         thread::spawn(move || generator.generate_all());
 
         let mut shortest = std::usize::MAX;
-        let mut paths_checked = 0;
-        let mut last_checkin = 0;
+        // let mut paths_checked = 0;
+        // let mut last_checkin = 0;
         loop {
             match rx.recv() {
-                Ok(path) => {
-                    let mut length = self.entrance_to_keys[&path[0]];
-                    for i in 1..path.len() {
-                        length += self.keys_to_keys[&path[i - 1]][&path[i]];
-                    }
-                    if length < shortest { shortest = length; }
-                    paths_checked += 1;
-                    if paths_checked - last_checkin > 100000 {
-                        println!("Checked {} paths, best so far: {} ...", paths_checked, shortest);
-                        last_checkin = paths_checked;
-                    }
+                Ok(length) => {
+                    println!("New best: {}", length);
+                    shortest = length;
                 },
                 _ => break
             }
