@@ -1,8 +1,6 @@
 use std::fs::File;
 use std::io::{prelude::*, BufReader};
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Sender, Receiver};
-use std::thread;
 use std::collections::{HashMap, HashSet, VecDeque};
 use structopt::StructOpt;
 
@@ -14,140 +12,89 @@ struct Cli {
     file: PathBuf,
 }
 
-struct TopologicalOrderingGenerator {
-    dependencies: HashMap<char, HashSet<char>>,
-    in_degree: HashMap<char, usize>,
-    path: Vec<char>,
-    distance: usize,
-    undiscovered: HashSet<char>,
-    sender: Sender<usize>,
-    entrance_to_keys: HashMap<char, usize>,
-    keys_to_keys: HashMap<char, HashMap<char, usize>>,
-    best_emitted: usize,
+fn key_to_idx(key: char) -> usize { (key as usize) - 97 }
+fn idx_to_key(idx: usize) -> char { ((idx as u8) + 97) as char }
+
+// Get new requirements from existing requirements and unlock mask
+fn apply_unlock(mut mask: u32, reqs: &Vec<u8>) -> Vec<u8> {
+    let mut out = reqs.clone();
+    for i in 0..out.len() { out[i] -= (mask & 1) as u8; mask >>= 1; }
+    out
 }
 
-impl TopologicalOrderingGenerator {
-    fn new(
-        deps: HashMap<char, HashSet<char>>,
-        sender: Sender<usize>,
-        entrance_to_keys: HashMap<char, usize>,
-        keys_to_keys: HashMap<char, HashMap<char, usize>>,
-    ) -> TopologicalOrderingGenerator {
-        let mut in_degree = deps.keys().map(|k| (*k, 0)).collect::<HashMap<char, usize>>();
-        for (_, depended_on) in &deps {
-            for d in depended_on {
-                in_degree.entry(*d).and_modify(|e| *e += 1);
-            }
-        }
-        TopologicalOrderingGenerator{
-            dependencies: deps,
-            in_degree: in_degree.clone(),
-            path: vec![],
-            distance: 0,
-            undiscovered: in_degree.keys().map(|k| *k).collect::<HashSet<char>>(),
-            sender: sender,
-            entrance_to_keys: entrance_to_keys,
-            keys_to_keys: keys_to_keys,
-            best_emitted: std::usize::MAX,
-        }
-    }
-
-    fn push_key(&mut self, key: char) -> bool {
-        let dist = if self.path.len() == 0 {
-            0
-        } else {
-            self.keys_to_keys[self.path.last().unwrap()][&key]
-        };
-        let new_distance = self.distance + dist;
-        if new_distance >= self.best_emitted { return false }
-        self.distance = new_distance;
-        self.undiscovered.remove(&key);
-        self.path.push(key);
-        for depended_on in &self.dependencies[&key] {
-            self.in_degree.entry(*depended_on).and_modify(|e| *e -= 1 );
-        }
-        true
-    }
-
-    fn pop_key(&mut self) {
-        let key = self.path.pop().unwrap();
-        self.undiscovered.insert(key);
-        for depended_on in &self.dependencies[&key] {
-            self.in_degree.entry(*depended_on).and_modify(|e| *e += 1 );
-        }
-        let dist = if self.path.len() == 0 {
-            0
-        } else {
-            self.keys_to_keys[self.path.last().unwrap()][&key]
-        };
-        self.distance -= dist;
-    }
-
-    fn generate_all(&mut self) {
-        for key in self.undiscovered.clone() {
-            if *self.in_degree.get(&key).unwrap_or(&0) == 0 {
-                if self.push_key(key) {
-                    self.generate_all();
-                    self.pop_key();
-                }
-            }
-        }
-
-        if self.path.len() == self.in_degree.len() {
-            let dist = self.distance + self.entrance_to_keys[self.path.last().unwrap()];
-            if dist < self.best_emitted {
-                println!("Best path so far: {:?}", self.path);
-                self.best_emitted = self.distance;
-                self.sender.send(self.best_emitted).unwrap();
-            }
-        }
-    }
-}
-
+// All fields in the key solver are indexed via key_to_idx
 struct KeySolver {
-    entrance_to_keys: HashMap<char, usize>,
-    keys_to_keys: HashMap<char, HashMap<char, usize>>,
-    dependencies: HashMap<char, HashSet<char>>,
+    // The distance to each key from the entrance
+    entrance_to_keys: Vec<usize>,
+    // The distance from each key to each other key
+    keys_to_keys: Vec<Vec<usize>>,
+    // This contains a bitmask for each key indicating which other keys'
+    // requirement counts should be decremented when this one is collected
+    unlock_masks: Vec<u32>,
+    // This contains a count of how many keys each key is dependent on
+    initial_reqs: Vec<u8>,
 }
 
 impl KeySolver {
     fn from_grid(grid: &Grid) -> KeySolver {
+        let mut keys_sorted = grid.keys.keys().map(|c| *c).collect::<Vec<char>>();
+        keys_sorted.sort();
+
+        let mut out = KeySolver{
+            entrance_to_keys: std::iter::repeat(0).take(keys_sorted.len()).collect::<Vec<usize>>(),
+            keys_to_keys: std::iter::repeat(vec![]).take(keys_sorted.len()).collect::<Vec<Vec<usize>>>(),
+            unlock_masks: std::iter::repeat(0).take(keys_sorted.len()).collect::<Vec<u32>>(),
+            initial_reqs: std::iter::repeat(0).take(keys_sorted.len()).collect::<Vec<u8>>(),
+        };
+
         let deps_and_distances_from_entrance = grid.bfs_to_keys(grid.entrance, true);
-        let mut keys_to_keys = HashMap::new();
-        for (name, pos) in grid.keys.iter() {
-            keys_to_keys.insert(*name, grid.bfs_to_keys(*pos, false).distances);
+        for (key, dist) in deps_and_distances_from_entrance.distances {
+            out.entrance_to_keys[key_to_idx(key)] = dist;
         }
+
+        for (from_key, pos) in grid.keys.iter() {
+            let mut distances = std::iter::repeat(0).take(keys_sorted.len()).collect::<Vec<usize>>();
+            for (key, dist) in grid.bfs_to_keys(*pos, false).distances {
+                distances[key_to_idx(key)] = dist;
+            }
+            out.keys_to_keys[key_to_idx(*from_key)] = distances;
+        }
+
         let dependencies = deps_and_distances_from_entrance.dependencies.unwrap();
-        KeySolver {
-            entrance_to_keys: deps_and_distances_from_entrance.distances,
-            keys_to_keys: keys_to_keys,
-            dependencies: dependencies,
+        for (dependent, deps) in dependencies.clone() /* TODO REMOVE */ {
+            out.initial_reqs[key_to_idx(dependent)] = deps.len() as u8;
+            for dep in deps {
+                out.unlock_masks[key_to_idx(dep)] |= 1 << key_to_idx(dependent);
+            }
         }
+
+        out
     }
 
     fn get_shortest_path(&mut self) -> usize {
-        let (tx, rx): (Sender<usize>, Receiver<usize>) = mpsc::channel();
-        let mut generator = TopologicalOrderingGenerator::new(
-            self.dependencies.clone(),
-            tx,
-            self.entrance_to_keys.clone(),
-            self.keys_to_keys.clone()
-        );
-        thread::spawn(move || generator.generate_all());
+        // A map from (curr_key, keys_acquired) to the min distance seen for that combo thus far
+        let mut seen: HashMap<(usize, u32), usize> = HashMap::new();
+        // A memoization cache of keys_acquired bitmasks to unlock requirement counts - maybe make this a bounded LRU
+        let mut cache: HashMap<u32, Vec<u8>> = HashMap::new();
+        // The (curr_key, keys_acquired) and current distance for a path
+        let mut to_visit: VecDeque<((usize, u32), usize)> = VecDeque::new();
 
-        let mut shortest = std::usize::MAX;
-        // let mut paths_checked = 0;
-        // let mut last_checkin = 0;
-        loop {
-            match rx.recv() {
-                Ok(length) => {
-                    println!("New best: {}", length);
-                    shortest = length;
-                },
-                _ => break
+        // Start with the keys that have no requirements
+        for idx in 0..self.initial_reqs.len() {
+            if self.initial_reqs[idx] == 0 {
+                let keys_acquired = 1 << idx;
+                let visit_info = ((idx, keys_acquired), self.entrance_to_keys[idx]);
+                to_visit.push_front(visit_info);
+                seen.insert(visit_info.0, visit_info.1);
+                cache.insert(keys_acquired, apply_unlock(self.unlock_masks[idx], &self.initial_reqs));
             }
         }
-        shortest
+
+        let mut best_distance = std::usize::MAX;
+        while to_visit.len() != 0 {
+            // TODO - BFS
+        }
+        best_distance
     }
 }
 
@@ -227,7 +174,9 @@ fn main() -> Result<()> {
     let mut reader = BufReader::new(f);
     let grid = Grid::from_reader(&mut reader)?;
     let mut solver = KeySolver::from_grid(&grid);
-    println!("Minimum distance to get all keys: {}", solver.get_shortest_path());
+    println!("Finished populating solver with data...");
+    let shortest = solver.get_shortest_path();
+    println!("Minimum distance to get all keys: {}", shortest);
 
     Ok(())
 }
