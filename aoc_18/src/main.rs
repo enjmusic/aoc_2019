@@ -13,7 +13,6 @@ struct Cli {
 }
 
 fn key_to_idx(key: char) -> usize { (key as usize) - 97 }
-fn idx_to_key(idx: usize) -> char { ((idx as u8) + 97) as char }
 
 // Get new requirements from existing requirements and unlock mask
 fn apply_unlock(mut mask: u32, reqs: &Vec<u8>) -> Vec<u8> {
@@ -60,8 +59,7 @@ impl KeySolver {
             out.keys_to_keys[key_to_idx(*from_key)] = distances;
         }
 
-        let dependencies = deps_and_distances_from_entrance.dependencies.unwrap();
-        for (dependent, deps) in dependencies.clone() /* TODO REMOVE */ {
+        for (dependent, deps) in deps_and_distances_from_entrance.dependencies.unwrap() {
             out.initial_reqs[key_to_idx(dependent)] = deps.len() as u8;
             for dep in deps {
                 out.unlock_masks[key_to_idx(dep)] |= 1 << key_to_idx(dependent);
@@ -74,10 +72,14 @@ impl KeySolver {
     fn get_shortest_path(&mut self) -> usize {
         // A map from (curr_key, keys_acquired) to the min distance seen for that combo thus far
         let mut seen: HashMap<(usize, u32), usize> = HashMap::new();
-        // A memoization cache of keys_acquired bitmasks to unlock requirement counts - maybe make this a bounded LRU
+        // A memoization cache of keys_acquired bitmasks to unlock requirement counts
         let mut cache: HashMap<u32, Vec<u8>> = HashMap::new();
         // The (curr_key, keys_acquired) and current distance for a path
         let mut to_visit: VecDeque<((usize, u32), usize)> = VecDeque::new();
+
+        // Get the bitmask that represents having all keys
+        let mut all_keys_mask: u32 = 0;
+        for _ in 0..self.unlock_masks.len() { all_keys_mask <<= 1; all_keys_mask |= 1; }
 
         // Start with the keys that have no requirements
         for idx in 0..self.initial_reqs.len() {
@@ -91,9 +93,33 @@ impl KeySolver {
         }
 
         let mut best_distance = std::usize::MAX;
+        let mut states_visited = 0;
         while to_visit.len() != 0 {
-            // TODO - BFS
+            states_visited += 1;
+            let ((curr_key, acquired_mask), curr_dist) = to_visit.pop_back().unwrap();
+
+            if acquired_mask == all_keys_mask {
+                if curr_dist < best_distance { best_distance = curr_dist; }
+                continue
+            }
+
+            let reqs = cache[&acquired_mask].clone();
+            for (idx, req_count) in reqs.iter().enumerate() {
+                if idx != curr_key && *req_count == 0 && ((acquired_mask >> idx) & 1) == 0 {
+                    // This key hasn't been acquired and has no requirements
+                    let new_acquired_mask = acquired_mask | (1 << idx);
+                    let visit_info = ((idx, new_acquired_mask), curr_dist + self.keys_to_keys[curr_key][idx]);
+                    if !seen.contains_key(&visit_info.0) || seen[&visit_info.0] > visit_info.1 {
+                        // We haven't seen this (key, acquired) combo or if we have, it was
+                        // at a not as optimal distance from the entrance. Visit it!
+                        to_visit.push_front(visit_info);
+                        seen.insert(visit_info.0, visit_info.1);
+                        cache.insert(new_acquired_mask, apply_unlock(self.unlock_masks[idx], &cache[&acquired_mask]));
+                    }
+                }
+            }
         }
+        println!("States visited: {}", states_visited);
         best_distance
     }
 }
@@ -129,16 +155,14 @@ impl Grid {
     }
 
     fn bfs_to_keys(&self, start: (usize, usize), get_deps: bool) -> BFSResult {
-        let mut visited: HashSet<(usize, usize)> = HashSet::new();
         // (distance from start, point to visit, doors seen so far i.e. dependencies)
-        let mut frontier: VecDeque<(usize, (usize, usize), HashSet<char>)> = VecDeque::new();
-        frontier.push_front((0, start, HashSet::new()));
-
+        let mut to_visit: VecDeque<(usize, (usize, usize), HashSet<char>)> = VecDeque::new();
+        to_visit.push_front((0, start, HashSet::new()));
+        let mut visited: HashSet<(usize, usize)> = HashSet::new();
         let mut distances: HashMap<char, usize> = HashMap::new();
         let mut dependencies: HashMap<char, HashSet<char>> = HashMap::new();
-
-        while frontier.len() != 0 {
-            let (mut dist, point, mut deps) = frontier.pop_back().unwrap();
+        while to_visit.len() != 0 {
+            let (mut dist, point, mut deps) = to_visit.pop_back().unwrap();
             visited.insert(point);
             let curr_char = self.data[point.1][point.0];
             if curr_char.is_ascii_uppercase() { deps.insert(curr_char.to_ascii_lowercase()); }
@@ -148,18 +172,13 @@ impl Grid {
             }
             dist += 1;
             // Calculate next points to search
-            for new_row in vec![point.1 - 1, point.1 + 1] {
-                if self.data[new_row][point.0] != '#' && !visited.contains(&(point.0, new_row)) {
-                    frontier.push_front((dist, (point.0, new_row), deps.clone()));
-                }
-            }
-            for new_col in vec![point.0 - 1, point.0 + 1] {
-                if self.data[point.1][new_col] != '#' && !visited.contains(&(new_col, point.1)) {
-                    frontier.push_front((dist, (new_col, point.1), deps.clone()));
+            for next in vec![(point.0, point.1 - 1), (point.0, point.1 + 1), (point.0 - 1, point.1), (point.0 + 1, point.1)] {
+                if self.data[next.1][next.0] != '#' && !visited.contains(&(next.0, next.1)) {
+                    to_visit.push_front((dist, (next.0, next.1), deps.clone()));
                 }
             }
         }
-
+        
         BFSResult {
             distances: distances,
             dependencies: if get_deps { Some(dependencies) } else { None },
@@ -174,9 +193,7 @@ fn main() -> Result<()> {
     let mut reader = BufReader::new(f);
     let grid = Grid::from_reader(&mut reader)?;
     let mut solver = KeySolver::from_grid(&grid);
-    println!("Finished populating solver with data...");
-    let shortest = solver.get_shortest_path();
-    println!("Minimum distance to get all keys: {}", shortest);
+    println!("Minimum distance to get all keys: {}", solver.get_shortest_path());
 
     Ok(())
 }
