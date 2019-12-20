@@ -60,9 +60,21 @@ fn unvisited_with_min_dist(u: &HashSet<(usize, usize)>, d: &HashMap<(usize, usiz
     best
 }
 
+fn open_with_min_f(open: &HashMap<((usize, usize), usize), (usize, usize)>) -> (((usize, usize), usize), (usize, usize)) {
+    let (mut min_f, mut best) = (std::usize::MAX, (((0, 0), 0), (0, 0)));
+    for (node, (g, h)) in open {
+        if g + h < min_f { min_f = g + h; best = (*node, (*g, *h)); }
+    }
+    best
+}
+
 struct MazeGraph {
     distances: HashMap<(usize, usize), HashMap<(usize, usize), usize>>,
+    distances_no_teleports: HashMap<(usize, usize), HashMap<(usize, usize), usize>>,
+    internal_nodes: HashMap<(usize, usize), (usize, usize)>,
+    external_nodes: HashMap<(usize, usize), (usize, usize)>,
     labels: HashMap<String, Vec<(usize, usize)>>,
+    grid_dimensions: (usize, usize),
 }
 
 impl MazeGraph {
@@ -140,20 +152,42 @@ impl MazeGraph {
             distances.insert(*node, node_distances);
         }
 
-        // Set travel distances between the nodes for a given portal to 1
+        let distances_no_teleports = distances.clone();
+        let mut internal_nodes: HashMap<(usize, usize), (usize, usize)> = HashMap::new();
+        let mut external_nodes: HashMap<(usize, usize), (usize, usize)> = HashMap::new();
+
+        // Set travel distances with teleports between the nodes for a given portal to 1
         for (_, nodes) in &labels {
             if nodes.len() == 2 {
-                distances.get_mut(&nodes[0].clone()).map_or(None, |d| d.insert(nodes[1], 1) );
-                distances.get_mut(&nodes[1].clone()).map_or(None, |d| d.insert(nodes[0], 1) );
+                let (node0, node1) = (nodes[0].clone(), nodes[1].clone());
+                distances.get_mut(&node0).map_or(None, |d| d.insert(nodes[1], 1) );
+                distances.get_mut(&node1).map_or(None, |d| d.insert(nodes[0], 1) );
+
+                // Make internal <-> external node mappings
+                let (internal, external) = 
+                if node0.0 == 2 || node0.1 == 2 || node0.0 + 3 == grid[0].len() || node0.1 + 3 == grid.len() {
+                    (node1, node0)
+                } else {
+                    (node0, node1)
+                };
+                internal_nodes.insert(internal, external);
+                external_nodes.insert(external, internal);
             }
         }
 
-        Ok(MazeGraph{ distances: distances, labels: labels })
+        Ok(MazeGraph{
+            distances: distances,
+            distances_no_teleports: distances_no_teleports,
+            internal_nodes: internal_nodes,
+            external_nodes: external_nodes,
+            labels: labels,
+            grid_dimensions: (grid[0].len(), grid.len()),
+        })
     }
 
-    fn get_shortest_path_length(&self, start: String, end: String) -> usize {
-        let start_point = self.labels[&start][0];
-        let end_point = self.labels[&end][0];
+    fn get_shortest_path_length(&self, start: &String, end: &String) -> usize {
+        let start_point = self.labels[start][0];
+        let end_point = self.labels[end][0];
         let mut unvisited: HashSet<(usize, usize)> = self.distances.keys().map(|p| *p).collect();
         let mut distances: HashMap<(usize, usize), usize> = self.distances.keys().map(|p| (*p, std::usize::MAX)).collect();
         distances.insert(start_point, 0);
@@ -170,6 +204,50 @@ impl MazeGraph {
 
         distances[&end_point]
     }
+
+    fn get_shortest_path_length_recursive(&self, start: &String, end: &String) -> Result<usize> {
+        let start_point = (self.labels[start][0], 0);
+        let end_point = (self.labels[end][0], 0);
+        // Open list contains mapping from (pos, layer) to (g, h)
+        let mut open: HashMap<((usize, usize), usize), (usize, usize)> = HashMap::new();
+        let mut closed: HashMap<((usize, usize), usize), (usize, usize)> = HashMap::new();
+        open.insert(start_point, (0, 0));
+
+        // Run A* Search
+        while open.len() != 0 {
+            let ((q_pos, q_layer), (q_g, q_h)) = open_with_min_f(&open);
+            open.remove(&(q_pos, q_layer));
+            for (neighbor_pos, dist_to_neighbor) in &self.distances_no_teleports[&q_pos] {
+                if (*neighbor_pos, q_layer) == end_point { return Ok(q_g + dist_to_neighbor); }
+
+                // Account for various teleportation conditions changing layers
+                let (pos, layer, dist) = if q_layer == 0 && self.external_nodes.contains_key(neighbor_pos) {
+                    (*neighbor_pos, q_layer, *dist_to_neighbor)
+                } else if let Some(dest) = self.external_nodes.get(neighbor_pos) {
+                    (*dest, q_layer - 1, *dist_to_neighbor + 1)
+                } else if let Some(dest) = self.internal_nodes.get(neighbor_pos) {
+                    (*dest, q_layer + 1, *dist_to_neighbor + 1)
+                } else {
+                    (*neighbor_pos, q_layer, *dist_to_neighbor)
+                };
+
+                // Heuristic for distance to end is based on layers and grid size
+                let (g, h) = (q_g + dist, (q_layer + 1) * self.grid_dimensions.0 / 2);
+
+                if let Some((open_g, open_h)) = open.get(&(pos, layer)) {
+                    if open_g + open_h < g + h { continue }
+                }
+                if let Some((closed_g, closed_h)) = closed.get(&(pos, layer)) {
+                    if closed_g + closed_h < g + h { continue }
+                }
+
+                open.insert((pos, layer), (g, h));
+                closed.insert((q_pos, q_layer), (q_g, q_h));
+            }
+        }
+
+        Err(From::from(format!("No path found from {} to {}", start, end)))
+    }
 }
 
 fn main() -> Result<()> {
@@ -178,6 +256,8 @@ fn main() -> Result<()> {
     let f = File::open(opt.file)?;
     let reader = BufReader::new(f);
     let graph = MazeGraph::from_reader(reader)?;
-    println!("Shortest from AA to ZZ is {}", graph.get_shortest_path_length("AA".to_owned(), "ZZ".to_owned()));
+    let (start, finish) = ("AA".to_owned(), "ZZ".to_owned());
+    println!("Shortest from AA to ZZ is {}", graph.get_shortest_path_length(&start, &finish));
+    println!("Shortest from AA to ZZ (recursive) is {}", graph.get_shortest_path_length_recursive(&start, &finish)?);
     Ok(())
 }
