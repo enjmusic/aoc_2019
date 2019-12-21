@@ -17,7 +17,7 @@ fn is_pulled(memory: &Vec<i64>, point: (usize, usize)) -> Result<bool> {
     program.give_input(point.0 as i64);
     program.give_input(point.1 as i64);
     program.execute()?;
-    Ok(program.get_output().unwrap() != 0)
+    program.get_output().map(|o| o != 0).ok_or(From::from("No output"))
 }
 
 fn part1(memory: &Vec<i64>) -> Result<()> {
@@ -31,13 +31,12 @@ fn part1(memory: &Vec<i64>) -> Result<()> {
 }
 
 fn part2(memory: &Vec<i64>) -> Result<()> {
-    let mut curr = (0, 1);
+    let mut curr = (0, 50); // Make sure we're at a y with a decent width beam
     loop {
         while !is_pulled(memory, curr)? { curr.0 += 1; }
         if curr.0 >= 99 && curr.1 >= 99 {
-            if is_pulled(memory, (curr.0, curr.1 - 99))? && is_pulled(memory, (curr.0 + 99, curr.1 - 99))? {
-                println!("Found square with top left edge at {}, {}", curr.0, curr.1 - 99);
-                return Ok(())
+            if is_pulled(memory, (curr.0 + 99, curr.1 - 99))? {
+                return Ok(println!("Found square with top left edge at {}, {}", curr.0, curr.1 - 99))
             }
         }
         curr.1 += 1;
