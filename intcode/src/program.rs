@@ -322,10 +322,13 @@ impl IntcodeProgram {
 
     pub fn execute_until_event(&mut self) -> Result<Event> {
         loop {
-            let curr_ip = self.ip; // In case of input rewind
+            let curr_ip = self.ip;
             let instruction = self.get_instruction()?;
             if let Some(event) = self.execute_instruction(instruction, true)? {
-                if event == Event::InputRequired { self.ip = curr_ip; }
+                match event {
+                    Event::ProducedOutput => (),
+                    _ => self.ip = curr_ip // Keep program at same instruction for input/exit
+                }
                 return Ok(event)
             }
         }
