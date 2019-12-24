@@ -25,16 +25,15 @@ impl RecursiveCells {
 
     fn step(&mut self) {
         if self.layers[&self.min] != 0 {
-            self.layers.insert(self.min - 1, 0);
             self.min -= 1;
+            self.layers.insert(self.min, 0);
         }
         if self.layers[&self.max] != 0 {
-            self.layers.insert(self.max + 1, 0);
             self.max += 1;
+            self.layers.insert(self.max, 0);
         }
-        let mut new_layers = HashMap::new();
-        for (&layer, &cells) in &self.layers {
-            let cells_stepped = step(cells, layer, &|bit, layer| {
+        self.layers = self.layers.iter().map(|(&layer, &cells)| {
+            (layer, step(cells, layer, &|bit, layer| {
                 all_checks(bit, layer).fold(0, |acc, (check_bit, check_layer)| {
                     acc + if let Some(layer_bits) = self.layers.get(&check_layer) {
                         ((layer_bits >> check_bit) & 1)
@@ -42,10 +41,8 @@ impl RecursiveCells {
                         0
                     }
                 })
-            }) & 0x1ffefff; // Empty out the center cell
-            new_layers.insert(layer, cells_stepped);
-        }
-        self.layers = new_layers;
+            }) & 0x1ffefff) // Empty out the center cell
+        }).collect();
     }
 
     fn count_alive(&self) -> usize {
@@ -109,17 +106,12 @@ fn same_layer_checks(bit: i32, layer: i32, exclude_center: bool) -> impl Iterato
 fn get_next_state(curr_state: u32, neighbor_alive_counts: u32) -> u32 {
     match (curr_state, neighbor_alive_counts) {
         (0, 1) | (0, 2) | (1, 1) => 1,
-        (1, _) => 0,
-        (prev, _) => prev,
+        _ => 0
     }
 }
 
 fn step(cells: u32, layer: i32, alive_counts_fn: &dyn Fn(/* bit */ i32,/* layer */ i32) -> u32) -> u32 {
-    let mut out: u32 = 0;
-    for i in 0..25 {
-        out |= get_next_state((cells >> i) & 1, alive_counts_fn(i, layer)) << i;
-    }
-    out
+    (0..25).fold(0, |out, bit| out | (get_next_state((cells >> bit) & 1, alive_counts_fn(bit, layer)) << bit))
 }
 
 fn part1(mut cells: u32) {
