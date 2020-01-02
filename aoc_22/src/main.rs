@@ -95,7 +95,7 @@ fn fast_modular_exponentiation(base: i128, exponent: i128, modulus: i128) -> i12
 fn part1(commands: &Vec<Command>) {
     let (start, deck_size) = (2019, 10007);
     let (factor, constant) = collapse_to_linear_congruence(commands, deck_size);
-    println!("Card 2019 ended at index: {}", (start * factor + constant) % deck_size)
+    println!("Card 2019 ended at index: {}", (start * factor + constant).rem_euclid(deck_size))
 }
 
 fn part2(commands: &Vec<Command>) {
@@ -111,13 +111,13 @@ fn part2(commands: &Vec<Command>) {
     let (new_factor, new_constant) = (factor_exponent, series_sum);
 
     // 2020 - new_constant ≡ new_factor * x (mod deck_size)
-    let lhs = (((end - new_constant) % deck_size) + deck_size) % deck_size;
+    let lhs = (end - new_constant).rem_euclid(deck_size);
 
     // We need to get the modular multiplicative inverse of new_factor
     // so we can multiply it to both sides of the equation
     let (_, new_factor_inverse, _) = extended_gcd(new_factor, deck_size);
-    let x = (lhs * new_factor_inverse) % deck_size;
-    println!("The card at index 2020 started at index {}", (x + deck_size) % deck_size);
+    let x = (lhs * new_factor_inverse).rem_euclid(deck_size);
+    println!("The card at index 2020 started at index {}", x);
 }
 
 fn main() -> Result<()> {
